@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Runtime — 生产形态的 LLM Agent 运行时</title>
-<meta name="description" content="一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。136 模块 / 7.6 万行 / 2167 用例全绿。">
+<meta name="description" content="一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。138 模块 / 7.6 万行 / 2167 用例全绿。">
 <meta property="og:title" content="Agent Runtime">
 <meta property="og:description" content="生产形态的 LLM Agent 运行时。运行时拥有形状，应用拥有内容。">
 <meta property="og:type" content="website">
@@ -160,11 +160,11 @@ footer a{color:var(--fg2)}
       <a class="btn" href="#start">快速开始</a>
     </div>
     <div class="stats">
-      <div class="stat"><div class="n">136</div><div class="l">模块</div></div>
+      <div class="stat"><div class="n">138</div><div class="l">模块</div></div>
       <div class="stat"><div class="n">76k</div><div class="l">行代码</div></div>
       <div class="stat"><div class="n">2167</div><div class="l">测试用例</div></div>
       <div class="stat"><div class="n">11</div><div class="l">端到端场景</div></div>
-      <div class="stat"><div class="n">14</div><div class="l">冻结契约</div></div>
+      <div class="stat"><div class="n">15</div><div class="l">冻结契约</div></div>
     </div>
   </div>
 </div>
@@ -270,7 +270,7 @@ footer a{color:var(--fg2)}
     <table>
       <thead><tr><th>目录</th><th>职责</th><th>关键文件</th></tr></thead>
       <tbody>
-        <tr><td><code>contracts.py</code></td><td>冻结的契约层：14 个协议 + 状态归属表</td><td>—</td></tr>
+        <tr><td><code>contracts.py</code></td><td>冻结的契约层：15 + 状态归属表</td><td>—</td></tr>
         <tr><td><code>core/</code></td><td>控制面：网关、循环、上下文、流式、存储、观测</td><td>gateway, loop, context, streaming</td></tr>
         <tr><td><code>plane/</code></td><td>资源面：工具、记忆、知识、工作流、治理、质量</td><td>tool, memory, knowledge, dag, workflow</td></tr>
         <tr><td><code>agents/</code></td><td>应用层示例：只包含业务词汇，被运行时禁止 import</td><td>extractor, planner, tools.yaml</td></tr>
@@ -288,8 +288,8 @@ footer a{color:var(--fg2)}
       诚实区分这两件事，比多写十页宣传有用。
     </p>
     <figure style="margin-bottom:32px">
-      <img src="assets/verification-gates.png" alt="五道门禁：编译、测试、契约、场景、HTTP" loading="lazy">
-      <figcaption><code>./verify.sh</code> 的五道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到七道</figcaption>
+      <img src="assets/verification-gates.png" alt="门禁：编译、测试、契约、文档事实、场景、HTTP" loading="lazy">
+      <figcaption><code>./verify.sh</code> 的六道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到八道</figcaption>
     </figure>
     <div class="grid g2">
       <div class="card">
@@ -372,7 +372,7 @@ python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements-core.txt
 <span class="c"># 跑 11 个端到端场景</span>
 .venv/bin/python demo/run.py
 
-<span class="c"># 五道门禁：编译 / 测试 / 契约 / 场景 / HTTP</span>
+<span class="c"># 六道门禁：编译 / 测试 / 契约 / 文档事实 / 场景 / HTTP</span>
 ./verify.sh</pre>
 
     <h3 style="margin-top:32px">起步一个回合</h3>

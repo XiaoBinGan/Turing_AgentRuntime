@@ -49,6 +49,19 @@ else
   echo "FAIL"; FAIL=1
 fi
 
+# ③b 文档事实核对（README 里的数字必须与实际一致）
+#
+# 为什么把文档放进验收门禁：README 里的"138 模块 / 15 协议 / 2167 用例"
+# 会随代码漂移，而**文档错了不会让构建失败** —— 漂很久也没人知道。
+# 本仓的纪律是"文档可以写错，测试不会"，那就把文档也纳入测试。
+printf '③b 文档事实核对 ... '
+if "$PY" scripts/check_readme_facts.py >/tmp/readme-facts.log 2>&1; then
+  echo "OK"
+else
+  echo "FAIL"; FAIL=1
+  grep -E 'FAIL|不符' /tmp/readme-facts.log | head -5 | sed 's/^/     /'
+fi
+
 # ④ 端到端 demo
 if [ "$QUIET" != "-q" ]; then
   printf '④ 端到端场景 ... '

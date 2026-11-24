@@ -46,9 +46,15 @@ function** rather than an instance. The loader calls what it finds.
 ## Tests
 
 ```bash
-./verify.sh                                    # the five gates
+./verify.sh                                    # the six gates
 .venv/bin/python -m unittest tests.test_x -v   # one module
+python scripts/check_readme_facts.py           # README numbers vs code
 ```
+
+The sixth gate exists because README claims rot silently. If you change the
+number of modules, protocols, tests, scenarios, or assertions, that gate fails
+until the README matches. Documentation that lies is worse than documentation
+that is missing.
 
 Requirements for any pull request that changes behavior:
 

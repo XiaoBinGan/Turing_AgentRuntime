@@ -27,13 +27,13 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **136 modules, 76k lines, 2167
+answer that survived contact with a test suite: **138 modules, 76k lines, 2167
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
 content**. Concretely —
 
-- A frozen contract layer (`contracts.py`) that defines 14 protocols and every
+- A frozen contract layer (`contracts.py`) that defines 15 protocols and every
   state ownership rule. Nothing else may invent a shared type.
 - A bounded control loop with six termination conditions and three levels of
   deadlock detection.
@@ -156,7 +156,7 @@ the MCP SDK).
 Run the full verification:
 
 ```bash
-./verify.sh                    # 5 gates: compile, tests, contracts, scenarios, HTTP
+./verify.sh                    # 6 gates: compile, tests, contracts, docs-facts, scenarios, HTTP
 VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 gates, needs live services
 ```
 
@@ -230,12 +230,12 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**136 个模块、7.6 万行、2167 个用例、11 个端到端场景**，
+测试套件的检验：**138 个模块、7.6 万行、2167 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
 
-- 一层冻结的契约（`contracts.py`），定义 14 个协议与全部状态归属规则。
+- 一层冻结的契约（`contracts.py`），定义 15与全部状态归属规则。
   其他任何地方都不得自造共享类型。
 - 一个有界的控制循环，六个终止条件，三层死锁检测。
 - 一套补丁式上下文协议：每次写入都要声明 owner，由归属表裁决是否合法。
@@ -300,7 +300,7 @@ jsonschema、redis、qdrant、pymilvus、OpenTelemetry、MCP SDK）。
 完整验收：
 
 ```bash
-./verify.sh                    # 5 道门禁：编译、测试、契约、场景、HTTP
+./verify.sh                    # 6 道门禁：编译、测试、契约、文档事实、场景、HTTP
 VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 ```
 

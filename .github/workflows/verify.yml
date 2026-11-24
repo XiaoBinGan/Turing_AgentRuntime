@@ -44,5 +44,10 @@ jobs:
       - name: End-to-end scenarios
         run: python demo/run.py
 
+      - name: README facts match code
+        # README 里的数字会随代码漂移，且文档错了不会让构建失败。
+        # 把文档也纳入 CI，漂移立刻可见。
+        run: python scripts/check_readme_facts.py
+
       - name: HTTP surface
         run: python -m unittest tests.test_serve tests.test_serve_infra -q
