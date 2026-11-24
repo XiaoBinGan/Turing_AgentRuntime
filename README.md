@@ -85,6 +85,10 @@ One mainline, four resource planes, two guarantee planes. Governance fails
 closed (no decision means no); quality fails open (a broken evaluator must not
 stop a turn).
 
+![Architecture overview](docs/images/architecture.png)
+
+![Request sequence](docs/images/request-sequence.png)
+
 ### The seven decisions that matter
 
 1. **Patch protocol context.** State is not a dict you mutate. Every write is
@@ -116,6 +120,8 @@ stop a turn).
 7. **Observability is a plane, not a logger.** Metrics, traces, and audit are
    separate concerns with separate failure modes. Audit never records raw goals.
    Metric labels are normalized so a client cannot explode cardinality.
+
+![Failure posture](docs/images/failure-posture.png)
 
 Deeper design documents live in [`docs/`](docs/):
 
@@ -243,6 +249,10 @@ safe to adopt.
 
 一条主线、四个资源面、两个保障面。治理面 fail-closed（判不出来就是拒绝），
 质量面 fail-open（评测器坏了不能拦住回合）。
+
+![架构全景](docs/images/architecture.png)
+
+![请求时序](docs/images/request-sequence.png)
 
 ### 七个关键决定
 

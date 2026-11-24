@@ -68,6 +68,13 @@ h2{font-size:clamp(24px,3.4vw,32px);letter-spacing:-.02em;font-weight:700;margin
 .sub{color:var(--fg2);max-width:680px;margin-bottom:40px;font-size:16px}
 h3{font-size:17px;font-weight:600;margin-bottom:8px}
 
+/* figure */
+figure{margin:0}
+figure img{width:100%;height:auto;display:block;border:1px solid var(--line);
+  border-radius:10px;background:var(--bg2)}
+figcaption{margin-top:10px;font-size:13px;color:var(--fg3);line-height:1.5}
+figure + h3{margin-top:40px}
+
 /* cards */
 .grid{display:grid;gap:16px}
 .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
@@ -241,6 +248,24 @@ footer a{color:var(--fg2)}
         │  <span class="c">Quality (fail-open)   Observability</span>
         │  <span class="c">eval · critique       metrics · traces · audit</span>
         └───────────────────────────┘</pre>
+    <h3 style="margin-top:40px">架构全景</h3>
+    <figure>
+      <img src="assets/architecture.png" alt="Agent Runtime 架构全景：一条主线、四个资源面、两个保障面" loading="lazy">
+      <figcaption>一条主线、四个资源面（Tool / Memory / Knowledge / Workflow）、两个保障面（Governance / Quality）</figcaption>
+    </figure>
+
+    <h3 style="margin-top:36px">一次请求的时序</h3>
+    <figure>
+      <img src="assets/request-sequence.png" alt="一次请求经过的 11 道准入与主循环" loading="lazy">
+      <figcaption>十一到准入闸、循环、工具分发、记账、落盘、统一出口</figcaption>
+    </figure>
+
+    <h3 style="margin-top:36px">失败姿态</h3>
+    <figure>
+      <img src="assets/failure-posture.png" alt="治理面 fail-closed、质量面 fail-open 的失败姿态" loading="lazy">
+      <figcaption>治理面判不出来就是拒绝；质量面坏了不能拦住回合</figcaption>
+    </figure>
+
     <h3 style="margin-top:36px">模块分布</h3>
     <table>
       <thead><tr><th>目录</th><th>职责</th><th>关键文件</th></tr></thead>
@@ -262,6 +287,10 @@ footer a{color:var(--fg2)}
     <p class="sub">
       诚实区分这两件事，比多写十页宣传有用。
     </p>
+    <figure style="margin-bottom:32px">
+      <img src="assets/verification-gates.png" alt="五道门禁：编译、测试、契约、场景、HTTP" loading="lazy">
+      <figcaption><code>./verify.sh</code> 的五道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到七道</figcaption>
+    </figure>
     <div class="grid g2">
       <div class="card">
         <h3>已验证</h3>
