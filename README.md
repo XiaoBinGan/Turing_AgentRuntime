@@ -1,0 +1,316 @@
+# Agent Runtime
+
+[![tests](https://img.shields.io/badge/tests-2163%20passing-brightgreen)](https://github.com/XiaoBinGan/agent-runtime/actions)
+[![python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+A production-shaped runtime for LLM agents. It provides the **shape** — control
+loop, state ownership, tool dispatch, governance, observability, persistence —
+and leaves the **content** — prompts, business vocabulary, domain rules — to the
+application layer.
+
+> 中文说明见下方，或直接跳转 [中文](#中文说明)。
+
+---
+
+## Why this exists
+
+Most agent frameworks start from prompts and grow into a bundle of helpers. That
+works for demos and breaks the moment two teams need to share one runtime with
+different prompts, different tools, and different compliance rules.
+
+This project starts from the opposite end. It began as the reference
+implementation for a full-stack architect's notes on enterprise agent systems —
+a 18-chapter curriculum covering agent fundamentals, planning, tool calling, MCP,
+memory, RAG, context management, sandboxing, multi-agent, evaluation,
+performance, enterprise architecture, system design, and runtime internals.
+
+Every chapter asks "how would you actually build this". This repository is the
+answer that survived contact with a test suite: **136 modules, 76k lines, 2163
+tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
+
+The central design bet: **the runtime owns the shape, the application owns the
+content**. Concretely —
+
+- A frozen contract layer (`contracts.py`) that defines 14 protocols and every
+  state ownership rule. Nothing else may invent a shared type.
+- A bounded control loop with six termination conditions and three levels of
+  deadlock detection.
+- A patch-based context protocol where every write declares an owner, and an
+  ownership table decides whether that write is legal.
+- Optional, pluggable everything: vector backends, memory providers, sandboxes,
+  storage, LLM providers, MCP transports, tracers.
+
+If you want a library that helps you prompt an LLM, this is not it. If you want
+the skeleton that a team can standardize on for years, read on.
+
+---
+
+## Architecture
+
+```
+                     ┌──────────────────────────────────────────┐
+                     │  Governance  (fail-closed)               │
+                     │  authn · RBAC · input/output guard       │
+                     │  quota · rate limit · approvals          │
+                     └──────────────────────────────────────────┘
+                                        │
+  request ──► Gateway ──► Loop ──► Dispatcher ──► Tool
+                 │          │           │
+                 │          │           └── Secret injection, timeout,
+                 │          │               idempotency cache, per-turn limit
+                 │          │
+                 │          ├── Context  (patch log = trajectory = WAL)
+                 │          │      └── per-field OWNER_TABLE
+                 │          │
+                 │          └── ExecCtx  (principal, budget, deadline,
+                 │                       trace, approvals, depth, cancel)
+                 │
+        ┌────────┴────────┬──────────────┬──────────────┐
+        │                 │              │              │
+   Tool plane      Memory plane   Knowledge plane  Workflow plane
+   (MCP, sandbox)  (extract,      (RAG, vector,    (DAG, sub-agent,
+                    recall)        FTS, splitter)   saga, envelope bus)
+        │                 │              │              │
+        └────────┬────────┴──────────────┴──────────────┘
+                 │
+        ┌────────┴─────────┐
+        │  Quality (fail-open)      Observability
+        │  eval · critique          metrics · traces · audit
+        └───────────────────────────┘
+```
+
+One mainline, four resource planes, two guarantee planes. Governance fails
+closed (no decision means no); quality fails open (a broken evaluator must not
+stop a turn).
+
+### The seven decisions that matter
+
+1. **Patch protocol context.** State is not a dict you mutate. Every write is
+   `apply(Patch(op, path, by, value))`, and `OWNER_TABLE` decides whether that
+   `by` may touch that `path`. The patch log is simultaneously the trajectory,
+   the replay source, and the write-ahead log.
+
+2. **ExecCtx as aorta.** Principal, budget, deadline, trace id, idempotency key,
+   approvals, depth, and cancellation all travel in one object. Every plane
+   receives the same facts without reaching for globals.
+
+3. **Bounded loop.** Six termination conditions (done, budget, deadline,
+   deadlock, unrecoverable, needs-confirmation) and three deadlock detectors
+   (iteration count, semantic fingerprint, arbitration). A loop that cannot stop
+   is not a runtime, it is an incident.
+
+4. **Three-state split by lifecycle.** Context lives one turn. Session lives one
+   conversation. Memory lives a retention matrix. Knowledge lives versions.
+   Mixing them is the most common architectural mistake in agent systems.
+
+5. **SPI everywhere, dependencies nowhere.** The core runtime imports nothing
+   third-party. Every external system is behind a protocol with a stdlib default
+   and an optional mature implementation.
+
+6. **Single-request amplification is a threat model.** Node counts, budgets, page
+   sizes, metric label cardinality, workflow capacity — all bounded, because one
+   request should never be able to consume unbounded resources.
+
+7. **Observability is a plane, not a logger.** Metrics, traces, and audit are
+   separate concerns with separate failure modes. Audit never records raw goals.
+   Metric labels are normalized so a client cannot explode cardinality.
+
+Deeper design documents live in [`docs/`](docs/):
+
+| Document | Contents |
+|---|---|
+| [STATUS.md](docs/STATUS.md) | Module map with dependency graphs |
+| [SPI.md](docs/SPI.md) | Every extension point and its contract |
+| [TOOLS.md](docs/TOOLS.md) | Tool manifest, risk tiers, approval flow |
+| [DEPLOY.md](docs/DEPLOY.md) | 20+ environment variables, failure modes |
+| [ROBUSTNESS.md](docs/ROBUSTNESS.md) | Destructive test findings and fixes |
+| [DESIGN-C.md](docs/DESIGN-C.md) | Parallel tools, sub-agent progress, workflow engine |
+| [DEVLOG.md](docs/DEVLOG.md) | Round-by-round engineering log |
+
+---
+
+## Quick start
+
+Zero third-party dependencies for the core:
+
+```bash
+git clone https://github.com/XiaoBinGan/agent-runtime.git
+cd agent-runtime
+python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
+.venv/bin/python demo/run.py            # 11 end-to-end scenarios
+```
+
+`requirements-core.txt` is empty by design. The core runtime runs on the standard
+library alone. `requirements.txt` adds the optional integrations (FastAPI,
+tiktoken, prometheus_client, jsonschema, redis, qdrant, pymilvus, OpenTelemetry,
+the MCP SDK).
+
+Run the full verification:
+
+```bash
+./verify.sh                    # 5 gates: compile, tests, contracts, scenarios, HTTP
+VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 gates, needs live services
+```
+
+Start the HTTP service:
+
+```bash
+AGENT_RUNTIME_ALLOW_ANONYMOUS=1 .venv/bin/python serve.py
+curl -X POST localhost:8000/v1/turns \
+  -d '{"goal":"api p99 is 3s, find the root cause",
+       "principal":{"user_id":"u","tenant":"acme","roles":["sre"],
+                    "scopes":["runtime:run","tool.read"]}}'
+```
+
+---
+
+## What is verified, and what is not
+
+Verified by the suite:
+
+- 2163 unit and integration tests, stable across repeated full runs
+- 11 end-to-end scenarios, 80 assertions
+- Concurrency: 100 threads against one gateway, 8 threads x 5 turns, 60 mixed
+  workflow requests, zero exceptions
+- Memory bounded: 900 turns grow 3KB with a capped audit log
+- Rate limiting exact under concurrency (40 concurrent, limit 10, exactly 10 pass)
+- Real model convergence: 4-6 steps to DONE on a root-cause task
+- Real Milvus cluster, real Langfuse ingestion, real OTLP delivery
+- Graceful shutdown ordering, checkpoint crash recovery, workflow persistence
+
+Not verified, stated honestly:
+
+- Multi-replica deployment against a shared Redis has never been exercised
+- No load test: no p50/p95/p99 under sustained QPS
+- No backup/restore drill, no schema migration path for stored payloads
+- No SLO definitions, alerting rules, or on-call runbook
+- No chaos engineering catalogue
+
+The engine is solid; the operational surface is not yet built. If you need an
+enterprise SLA, treat the second list as your roadmap.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: read `contracts.py`
+first, never modify it without a migration note, keep business vocabulary out of
+the runtime, and add a test that would have caught your bug.
+
+## License
+
+[Apache-2.0](LICENSE). Patent grant included, because infrastructure should be
+safe to adopt.
+
+---
+
+# 中文说明
+
+## 这个项目是什么
+
+一个**生产形态的 LLM Agent 运行时**。它提供**形状** —— 控制循环、状态归属、
+工具分发、治理、可观测性、持久化；把**内容** —— 提示词、业务词汇、领域规则 ——
+留给应用层。
+
+## 由来
+
+大多数 Agent 框架从提示词出发，长成一堆辅助函数。做演示可以，但两个团队要用同一套
+运行时、各自的提示词与工具、各自的合规要求时，就散了。
+
+这个项目从反方向开始。它源自一份全栈架构师笔记里的企业级 Agent 课程 ——
+18 章，覆盖 Agent 基础、规划、工具调用、MCP、记忆、RAG、上下文管理、沙箱、
+多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
+
+每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
+测试套件的检验：**136 个模块、7.6 万行、2163 个用例、11 个端到端场景**，
+全绿，且重复跑稳定。
+
+核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
+
+- 一层冻结的契约（`contracts.py`），定义 14 个协议与全部状态归属规则。
+  其他任何地方都不得自造共享类型。
+- 一个有界的控制循环，六个终止条件，三层死锁检测。
+- 一套补丁式上下文协议：每次写入都要声明 owner，由归属表裁决是否合法。
+- 一切都可选、可插拔：向量后端、记忆提供者、沙箱、存储、LLM 提供者、
+  MCP 传输、追踪器。
+
+如果你要的是「帮我调提示词的库」，这不是。如果你要的是一个团队能用很多年的骨架，
+继续读。
+
+## 架构
+
+一条主线、四个资源面、两个保障面。治理面 fail-closed（判不出来就是拒绝），
+质量面 fail-open（评测器坏了不能拦住回合）。
+
+### 七个关键决定
+
+1. **补丁协议上下文**。状态不是一个随手改的 dict。每次写入都是
+   `apply(Patch(op, path, by, value))`，由 `OWNER_TABLE` 裁决这个 `by`
+   能不能碰这个 `path`。补丁日志同时是轨迹、回放源、预写日志。
+
+2. **ExecCtx 是大动脉**。principal、预算、截止时间、trace id、幂等键、审批、
+   深度、取消信号都在一个对象里流转。每个面拿到同样的事实，不用摸全局。
+
+3. **有界循环**。六个终止条件（完成、预算、超时、死锁、不可恢复、等待确认）
+   与三层死锁检测（迭代计数、语义指纹、仲裁）。停不下来的循环不是运行时，
+   是事故。
+
+4. **按生命周期三态分离**。Context 活一个回合，Session 活一次对话，
+   Memory 活一张保留矩阵，Knowledge 活版本。混在一起是 Agent 系统里最常见的
+   架构错误。
+
+5. **处处 SPI，处处零依赖**。核心运行时不 import 任何第三方。每个外部系统都在
+   一个协议后面，默认实现用标准库，成熟实现可选。
+
+6. **单请求放大是威胁模型**。节点数、预算、分页、指标基数、workflow 容量 ——
+   全部有界，因为一个请求不该能吃掉无限资源。
+
+7. **可观测性是一个面，不是一行日志**。指标、追踪、审计三件事各有各的失败模式。
+   审计不记原始 goal。指标 label 做归一化，客户端炸不了基数。
+
+详细设计文档在 [`docs/`](docs/)，索引见上方英文部分的表格。
+
+## 快速开始
+
+核心零第三方依赖：
+
+```bash
+git clone https://github.com/XiaoBinGan/agent-runtime.git
+cd agent-runtime
+python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
+.venv/bin/python demo/run.py            # 11 个端到端场景
+```
+
+`requirements-core.txt` 是空的，这是设计。核心运行时只靠标准库。
+`requirements.txt` 装的是可选集成（FastAPI、tiktoken、prometheus_client、
+jsonschema、redis、qdrant、pymilvus、OpenTelemetry、MCP SDK）。
+
+完整验收：
+
+```bash
+./verify.sh                    # 5 道门禁：编译、测试、契约、场景、HTTP
+VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
+```
+
+## 已验证与未验证
+
+**已验证**：2163 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
+零异常；900 回合内存增长 3KB；并发下限流精确（40 并发 limit 10 恰好 10 通过）；
+真模型 4-6 步收敛；真 Milvus 集群、真 Langfuse 投递、真 OTLP；优雅关闭顺序、
+检查点崩溃恢复、workflow 持久化。
+
+**未验证**：多副本打共享 Redis 从未跑过；没有压测，没有 p50/p95/p99；没有备份恢复
+演练，没有存量数据的 schema 迁移路径；没有 SLO、告警规则、值班手册；没有故障演练
+清单。
+
+引擎是扎实的，运维面还没建。要承诺企业级 SLA，请把第二条当作路线图。
+
+## 参与贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。短版本：先读 `contracts.py`，不带迁移说明
+不要改它，业务词汇不进运行时，修 bug 要带上能抓住那个 bug 的测试。
+
+## 许可证
+
+[Apache-2.0](LICENSE)。含专利授权 —— 基础设施应该让人敢于采用。

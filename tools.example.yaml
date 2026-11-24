@@ -1,0 +1,82 @@
+# tools.example.yaml — 声明式工具配置示例
+#
+# 用法：
+#   export AGENT_RUNTIME_TOOLS=/etc/agent-runtime/tools.yaml
+#   # 或代码里：load_tools("tools.example.yaml")
+#
+# 这份文件的每一段都是**可执行的真配置**（除 myapp.* 需要你自己的模块）。
+# 改完只重启进程，不需要动 Python 源码 —— 这就是这个格式存在的理由。
+#
+# 设计立场（看懂了再改，别把闸门拆了）：
+#   * 副作用是**声明出来的**，不是猜出来的。MCP 协议不告诉读写，
+#     内置工具就更没有理由让机器去猜 —— 猜错的代价是「删数据的工具被当成只读」。
+#   * 判不出来时按 mutating 处理（多一道审批），永不按 read_only 猜。
+#   * 不可逆能力默认**拒绝启动**，要开必须在 defaults 里显式签字。
+
+version: 1
+
+# ── 内置工具：进程内可调用的 Python 函数（按 import path 加载）────────────
+tools:
+  - name: query_metrics
+    description: 查服务的 p99 / 错误率
+    # module:function。模块按正常 import 规则解析；配置目录会被**追加**到 sys.path，
+    # 所以 myapp/ 和这份 YAML 放同一层时不用额外配 PYTHONPATH。
+    import: myapp.tools:query_metrics
+    side_effect: read_only                    # read_only | mutating | irreversible
+    risk_tier: T0                             # T0 | T1 | T2 | T3
+    idempotent: true
+    required_scope: tool.read
+    timeout_ms: 5000
+    input_schema:
+      type: object
+      properties:
+        service: {type: string}
+      required: [service]
+
+  - name: list_alerts
+    description: 列出当前未恢复的告警（只读、无参数）
+    import: myapp.tools:list_alerts
+    side_effect: read_only
+    # 其余字段都能省：risk_tier 由 side_effect 推出（read_only→T0），
+    # required_scope 同理（read_only→tool.read，其余→tool.write），
+    # idempotent 取 (side_effect == read_only)，timeout_ms 默认 5000。
+    # 不写 input_schema 也能加载（兜底成空 object schema 并记一条 warning）——
+    # 但强烈建议写：模型没有 schema 只能靠名字猜参数名。
+
+# ── MCP server：真起子进程，工具由 server 自报 ───────────────────────────
+mcp_servers:
+  - name: fs                                  # 工具名会加 `fs__` 前缀 → fs__get_note
+    # command 必须是**能 import mcp 的解释器**。这里写成相对路径 + cwd 指向本仓根目录，
+    # 所以 `cp tools.example.yaml tools.yaml` 之后就能直接跑（验证用）。
+    # 部署时换成绝对路径（systemd 的 PATH 和你手动跑时不是同一个，`python` 常常不存在的）。
+    command: .venv/bin/python
+    args: ["-m", "tests.mcp_fixture_server"]
+    cwd: .
+    # env 里支持 ${VAR} 与 ${VAR:-default}。**变量未定义且没默认值 = 启动失败**，
+    # 不会静默变成空串（空串会把错误推到子进程里，排查起点就丢了）。
+    env:
+      MCP_FIXTURE_LABEL: "${DEPLOY_LABEL:-prod}"
+      # 需要原样传下去的密钥这样写；没 export 就在启动时报错，正好拦住「配了没生效」
+      # SOME_TOKEN: "${SOME_TOKEN}"
+    startup_timeout_s: 20
+    call_timeout_s: 30
+    # 相对路径的 cwd 相对**本文件所在目录**（不是启动进程的 cwd）——
+    # 同一份配置在 systemd 和手动启动下行为必须一致。
+    # cwd: .
+    # 副作用判不出来时用这个默认值（MCP 协议不告诉读写）。判出来就不覆盖：
+    # 名字里带 create/delete 的工具按启发式走，不会被这里的默认值降级成只读。
+    default_side_effect: mutating
+    default_risk_tier: T2
+    # 显式覆盖（启发式猜错时用；删数据类必须显式声明为 irreversible）。
+    # 键用 MCP 原始工具名（不带 fs__ 前缀）。
+    overrides:
+      delete_note: {side_effect: irreversible, risk_tier: T3}
+
+# ── 全局策略 ──────────────────────────────────────────────────────────
+defaults:
+  # false（默认）= 配置里出现 irreversible 直接报错（fail-closed）。
+  # 上面 fs__delete_note 被显式标成 irreversible，所以这份示例必须开这个开关 ——
+  # 这正是设计意图：想让进程具备删数据的能力，就得有人在这行签字。
+  # 生产上更常见的做法是**不写这个工具**，把 override 一起去掉，保持 false。
+  allow_irreversible: true
+  max_tools: 64                             # 工具总数上限（内置 + MCP），超了报错

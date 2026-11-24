@@ -1,0 +1,48 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-core.txt
+
+      - name: Core must import with zero third-party deps
+        run: python -c "import contracts, core.loop, core.gateway, core.context; print('core ok')"
+
+      - name: Compile all modules
+        run: python -m compileall -q . -x '\.venv|__pycache__'
+
+      - name: Install full deps
+        run: pip install -r requirements.txt
+
+      - name: Unit and integration tests
+        run: python -m unittest discover -s tests -t . -v 2>&1 | tail -40
+
+      - name: Contract self-consistency
+        run: python -m unittest tests.test_spi_contracts tests.test_architecture -v
+
+      - name: End-to-end scenarios
+        run: python demo/run.py
+
+      - name: HTTP surface
+        run: python -m unittest tests.test_serve tests.test_serve_infra -q

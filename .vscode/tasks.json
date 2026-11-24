@@ -1,0 +1,30 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "验收：verify.sh（5 道门禁）",
+      "type": "shell",
+      "command": "./verify.sh",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "验收：全 7 道（含真集群 + Langfuse）",
+      "type": "shell",
+      "command": "VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "冒烟：smoke.sh",
+      "type": "shell",
+      "command": "./scripts/smoke.sh --port 8000",
+      "problemMatcher": []
+    },
+    {
+      "label": "测试：当前文件",
+      "type": "shell",
+      "command": ".venv/bin/python -m unittest ${relativeFileDirname}.${fileBasenameNoExtension} -v",
+      "problemMatcher": []
+    }
+  ]
+}

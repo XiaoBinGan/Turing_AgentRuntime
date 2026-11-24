@@ -1,0 +1,8 @@
+# 核心运行时的依赖清单 —— 刻意留空。
+#
+# 这不是占位符，是设计约束：core/ 下的每个模块只靠 Python 标准库，
+# 由 tests/test_architecture.py 在 AST 层面守着（禁止 import 第三方）。
+#
+# 想跑完整功能（HTTP 服务、向量库、追踪、MCP）请装 requirements.txt。
+#
+# 注意：Python 3.12+ 才能跑 pymilvus 的 milvus-lite 路径；3.14 已在本仓验证。

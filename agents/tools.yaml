@@ -1,0 +1,282 @@
+version: 1
+defaults:
+  allow_irreversible: true
+  max_tools: 64
+tools:
+- name: query_metrics
+  description: 查服务在时间窗内的指标曲线（p99 / error_rate / qps / cpu / memory），返回 latest/avg/min/max 与窗口内前后半段的 delta_ratio。**支持批量**：用 services=[...] + metrics=[...] 一次拿多条，要做多服务/多指标对比时**务必一次查完**，不要逐个发。判断「是不是劣化了」「涨了多少」时先用它。 何时该停：这一步的读数已经能支撑判断就停手写结论，不要用同一组参数重复调用（重复调用会被合并，不会带回新信息）。
+  import: agents.tools:query_metrics
+  side_effect: read_only
+  risk_tier: T0
+  idempotent: true
+  required_scope: tool.read
+  timeout_ms: 3000
+  max_result_bytes: 32768
+  per_turn_limit: 20
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+        description: 单个服务。与 services 二选一
+      services:
+        type: array
+        items:
+          type: string
+          enum:
+          - api
+          - payments
+          - search
+        minItems: 1
+        maxItems: 3
+        description: 多个服务一次查（对比用）。与 service 二选一
+      metric:
+        type: string
+        enum:
+        - p99
+        - error_rate
+        - qps
+        - cpu
+        - memory
+        description: 单个指标。与 metrics 二选一
+      metrics:
+        type: array
+        items:
+          type: string
+          enum:
+          - p99
+          - error_rate
+          - qps
+          - cpu
+          - memory
+        minItems: 1
+        maxItems: 5
+        description: 多个指标一次查（批量取证用）
+      window_minutes:
+        type: integer
+        minimum: 5
+        maximum: 1440
+    anyOf:
+    - required:
+      - service
+    - required:
+      - services
+    allOf:
+    - anyOf:
+      - required:
+        - metric
+      - required:
+        - metrics
+    additionalProperties: false
+- name: query_logs
+  description: 按服务 + 时间窗 + 级别查日志（新→旧）。指标说「劣化了」之后，用它找具体错误行（如连接池耗尽、超时、上游 5xx）。**支持批量**：services=[...] 一次扫多个服务（例如确认「只有 api 在报错」），返回 {results, ok_count, error_count}。 何时该停：这一步的读数已经能支撑判断就停手写结论，不要用同一组参数重复调用（重复调用会被合并，不会带回新信息）。
+  import: agents.tools:query_logs
+  side_effect: read_only
+  risk_tier: T0
+  idempotent: true
+  required_scope: tool.read
+  timeout_ms: 3000
+  max_result_bytes: 32768
+  per_turn_limit: 20
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+        description: 单个服务。与 services 二选一
+      services:
+        type: array
+        items:
+          type: string
+          enum:
+          - api
+          - payments
+          - search
+        minItems: 1
+        maxItems: 3
+        description: 多个服务一次查（对比同一时间窗的错误行）。与 service 二选一
+      window_minutes:
+        type: integer
+        minimum: 5
+        maximum: 1440
+      level:
+        type: string
+        enum:
+        - DEBUG
+        - INFO
+        - WARN
+        - ERROR
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 200
+    anyOf:
+    - required:
+      - service
+    - required:
+      - services
+    additionalProperties: false
+- name: list_deployments
+  description: 查最近发布（版本 / 时间 / 作者 / 变更摘要 / 是否可疑）。判断「是不是发布引起的」时用它把时间线对齐；不传 service 就是全部服务的最近 N 条，对齐时间线不必逐个服务查。 何时该停：这一步的读数已经能支撑判断就停手写结论，不要用同一组参数重复调用（重复调用会被合并，不会带回新信息）。
+  import: agents.tools:list_deployments
+  side_effect: read_only
+  risk_tier: T0
+  idempotent: true
+  required_scope: tool.read
+  per_turn_limit: 10
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 50
+    required: []
+    additionalProperties: false
+- name: get_config
+  description: 查服务在某个环境的配置项（结构保留、敏感字段打码）。核对 pool_max / timeout 这类参数是否与预期一致时用它。**支持批量**：services=[...] 一次核对多个服务，返回 {results, ok_count, error_count}。 何时该停：这一步的读数已经能支撑判断就停手写结论，不要用同一组参数重复调用（重复调用会被合并，不会带回新信息）。
+  import: agents.tools:get_config
+  side_effect: read_only
+  risk_tier: T0
+  idempotent: true
+  required_scope: tool.read
+  per_turn_limit: 10
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+        description: 单个服务。与 services 二选一
+      services:
+        type: array
+        items:
+          type: string
+          enum:
+          - api
+          - payments
+          - search
+        minItems: 1
+        maxItems: 3
+        description: 多个服务一次查（核对同一批参数是否一致）。与 service 二选一
+      environment:
+        type: string
+        enum:
+        - prod
+        - staging
+    anyOf:
+    - required:
+      - service
+    - required:
+      - services
+    additionalProperties: false
+- name: restart_service
+  description: 重启一个服务（滚动重启全部副本）。**会丢掉进程内现场**，排障时应在取证之后再考虑。需要人工审批，无审批只会得到待确认。何时该停：取证没做完之前不要调它；已经定位到原因、且有回滚路径时才交给审批，不要拿重启当「再试一次」。
+  import: agents.tools:restart_service
+  side_effect: mutating
+  risk_tier: T2
+  idempotent: false
+  required_scope: tool.write
+  timeout_ms: 10000
+  per_turn_limit: 3
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+      reason:
+        type: string
+        maxLength: 200
+    required:
+    - service
+    additionalProperties: false
+- name: scale_service
+  description: 把服务副本数改成 replicas（扩容/缩容）。改错了可以再改回来，所以是 T2 待审批而不是硬拒。需要人工审批。何时该停：水位与增速算清楚、目标副本数说得出依据时再提审批；不要用反复扩容试探容量上限。
+  import: agents.tools:scale_service
+  side_effect: mutating
+  risk_tier: T2
+  idempotent: false
+  required_scope: tool.write
+  timeout_ms: 10000
+  per_turn_limit: 3
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+      replicas:
+        type: integer
+        minimum: 1
+        maximum: 200
+    required:
+    - service
+    - replicas
+    additionalProperties: false
+- name: rollback_deployment
+  description: 把服务回滚到上一个（或指定）版本。**schema 迁移与已写入的数据不会随回滚恢复**，因此这是 T3：Runtime 直接拒绝，不接受审批确认。何时该停：调用它之前就要停 —— 这一步不属于 Agent 的自助动作，定位完成后把结论交给人即可，不要尝试绕过拒绝。
+  import: agents.tools:rollback_deployment
+  side_effect: irreversible
+  risk_tier: T3
+  idempotent: false
+  required_scope: tool.write
+  timeout_ms: 15000
+  per_turn_limit: 1
+  input_schema:
+    type: object
+    properties:
+      service:
+        type: string
+        enum:
+        - api
+        - payments
+        - search
+      to_version:
+        type: string
+        maxLength: 32
+    required:
+    - service
+    additionalProperties: false
+- name: delete_namespace
+  description: 删除一个命名空间（含其下所有工作负载、配置与 PVC）。**不可恢复**，T3：Runtime 直接拒绝，不接受审批确认。何时该停：这里没有「何时该调」 —— 它是不可恢复动作，Agent 侧永不自行发起，只输出建议与人确认点。
+  import: agents.tools:delete_namespace
+  side_effect: irreversible
+  risk_tier: T3
+  idempotent: false
+  required_scope: tool.write
+  timeout_ms: 15000
+  per_turn_limit: 1
+  input_schema:
+    type: object
+    properties:
+      namespace:
+        type: string
+        minLength: 1
+        maxLength: 64
+    required:
+    - namespace
+    additionalProperties: false

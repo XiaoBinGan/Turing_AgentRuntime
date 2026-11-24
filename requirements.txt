@@ -1,0 +1,88 @@
+# Runtime 依赖（venv: .venv）
+#
+# 早期是零依赖（手写 RESP / Prometheus / JSON Schema / BM25 / span 树），
+# 那是受限环境下的权宜之计。按"该用就用"已逐个替换为成熟库。
+#
+# 安装：
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# 测试：
+#   .venv/bin/python -m unittest discover -s tests -t .
+#   ./verify.sh                       （自动用 .venv）
+#
+# ── 核心 Runtime：**零第三方依赖**（实测）──────────────────────
+# 17 个核心模块（contracts / builder / core.* / plane.*）在纯 stdlib venv 里
+# 全部可导入，并跑通完整回合（Gateway + Memory + FTS5 检索）。
+# 想验证：python3 -m venv /tmp/x && /tmp/x/bin/python -c "import core.gateway"
+#
+# 下面标 [推荐] 的是绝大多数部署都会想要；标"按需"的缺了不崩，
+# 对应能力降级并**自报原因**（见 docs/ROBUSTNESS.md）。
+
+# ── [推荐] 常用增强 ───────────────────────────────────────────
+tiktoken>=0.7                 # [推荐] 精确 token 计量；不装→启发式（已标定，中文误差 3%）
+prometheus_client>=0.20       # [推荐] /metrics；不装→指标端点不可用
+jsonschema>=4.20              # [推荐] 强 JSON Schema 校验；不装→内置子集校验器
+pyyaml>=6.0                   # 声明式工具配置（toolconfig.py：YAML → ToolManifest）
+#   llama-index 会顺手带进 pyyaml，但那是**别人的**传递依赖，不是我们的保证；
+#   显式声明后缺了就是缺了，不会等人把工具配置搬到生产才发现。
+#   没装时 toolconfig 只拒绝 load_tools()（YAML 入口），纯 dict 解析仍然可用。
+redis>=5.0                    # 多副本必须：原子 KV + 跨副本配额；不装→单进程
+
+# ── HTTP 服务层：只有要"起进程"才需要 ──────────────────────────
+# 不装 fastapi 时 Runtime **仍然可用**，只是只能当库调（serve.py 导入不了）。
+fastapi>=0.115                # HTTP 服务层（serve.py）：请求校验 + 依赖注入 + OpenAPI
+uvicorn>=0.30                 # ASGI 服务器：serve.py 的进程入口（main()）
+pyjwt>=2.8                    # 鉴权（auth.py）：Bearer JWT 的验签 + exp/nbf/iss/aud 校验
+# ↑ 这三个是「库 → 进程」的分界线：没有它们，Gateway 只能被 Python 代码调用。
+#   装法：.venv/bin/pip install -r requirements.txt
+#   pyjwt 已实测 2.15.1：jwt.decode(options={"require": ["exp"]}) 生效；alg=none 被
+#   算法白名单拒绝（InvalidAlgorithmError）；ExpiredSignatureError / InvalidIssuerError /
+#   InvalidAudienceError / MissingRequiredClaimError / InvalidSignatureError 各按预期抛出。
+#   不装 pyjwt 时 auth.py **懒加载失败** → JWT 方式自报 "auth_not_configured"，
+#   API key 方式不受影响、服务照常启动（不静默降级成"跳过校验"）。
+#   生产可换成 gunicorn + uvicorn worker（本仓 main() 走单进程 uvicorn，够用且信号语义简单）。
+#   serve.py 自己不做降级——一个没有 HTTP 层的服务层不是"降级"，是没做。
+
+# ── 可选：装了才启用，不装自动降级（各处都自报能力）────────────────
+opentelemetry-sdk>=1.20       # span 导出（不装 → 只保留进程内 Tracer）
+qdrant-client>=1.7            # 向量后端之一（本地模式无需服务）
+pymilvus>=2.4                 # 向量后端之一（远程 Milvus 服务）
+milvus-lite>=2.4              # ↑ 的本地文件模式：真 Milvus 引擎，进程内，无需 etcd/minio
+llama-index-core>=0.11        # 文档切分器之一（会带来 ~40 个传递依赖，见下）
+mcp>=1.0                      # 工具接入协议（生态互通：filesystem/git/postgres/slack…）
+#   接入层：adapters/mcp_client.py（MCPToolBridge）。已实测 2.3.0：
+#   ClientSession / Client 两个形状都接（翻页参数不同，两类都认）。
+langfuse>=5.2                 # LLM 可观测（OTel exporter 的消费端）。
+#   plane/langfuse_export.py 的 sdk 模式用它；5.x 客户端本身就是 OTel 客户端，
+#   会连带装齐 opentelemetry-sdk + opentelemetry-exporter-otlp-proto-http（约 112 个包）。
+#   已实测 5.2.0：Langfuse(public_key, secret_key, host, tracer_provider, span_exporter,
+#   tracing_enabled) / create_trace_id(seed=) / start_observation(trace_context=, name=,
+#   as_type=, level=, model=, usage_details=) / flush() / shutdown()，
+#   模块级 propagate_attributes(user_id=, session_id=, tags=)。
+#   不装 → 自动降级 otlp 模式，两样都没有就 mode=none 并自报缺哪个包。
+
+# ── 可选增强（默认不装）────────────────────────────────────────
+# opentelemetry-exporter-otlp-proto-http   # 真要发 OTLP 才装
+# transformers                              # 想用模型自己的 tokenizer
+
+# ── Milvus 的两种跑法 ────────────────────────────────────────
+# 1) 本地文件（推荐先跑这个）：
+#      MilvusVectorBackend(uri="/data/milvus.db", dim=1024)
+#    → 真 Milvus 引擎嵌入进程，无需 docker/etcd/minio。所有契约测试用它验证。
+# 2) 远程集群：
+#      MilvusVectorBackend(uri="http://127.0.0.1:19530", dim=1024)
+#    → 需要 Milvus Standalone/Cluster（官方 compose 含 etcd + minio）。
+#
+# 注：官方 docker compose 在本机拉 minio 镜像失败（registry 拒绝），
+# 所以本项目的 Milvus 验证走的是 milvus-lite（同一引擎，不同部署形态）。
+
+# ── 依赖代价备忘 ──────────────────────────────────────────────
+# 只装必需 4 个  → 约 20 个包
+# 再装 qdrant    → 约 30 个包
+# 再装 milvus    → 约 40 个包
+# 再装 llama-index → 约 86 个包（实测）
+# 再装 fastapi+uvicorn → 约 100 个包
+# 再装 mcp           → 约 120 个包
+# 再装 langfuse      → 约 112 个包（实测）
+# 再装 pyjwt         → +1 个包（无传递依赖）
+# 所以 vector/Qdrant、vector/Milvus、splitter/LlamaIndex 全是**可选**：
+# 不装也能跑（各自降级到 memory 后端 / heading 切分器）。

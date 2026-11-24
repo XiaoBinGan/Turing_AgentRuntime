@@ -1,0 +1,62 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "起服务（本机开发：匿名 + scripted LLM）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/serve.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "AGENT_RUNTIME_PORT": "8000",
+        "AGENT_RUNTIME_ALLOW_ANONYMOUS": "1",
+        "AGENT_RUNTIME_LOG_LEVEL": "INFO",
+        "AGENT_RUNTIME_TOOLS": "${workspaceFolder}/agents/tools.yaml",
+        "AGENT_RUNTIME_EXTRACTOR": "agents.extractor:OpsExtractor",
+        "AGENT_RUNTIME_ROUTER": "agents.registry:build_router",
+        "AGENT_RUNTIME_PROMPT_PROFILE": "agents.prompts:build_profile",
+        "AGENT_RUNTIME_PROMPT_TEMPLATE": "agents.prompts:build_template",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "起服务（真模型：需先 export BABEL_*）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/serve.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "AGENT_RUNTIME_PORT": "8001",
+        "AGENT_RUNTIME_ALLOW_ANONYMOUS": "1",
+        "AGENT_RUNTIME_LLM": "openai",
+        "AGENT_RUNTIME_LLM_PREFIX": "BABEL",
+        "AGENT_RUNTIME_TOOLS": "${workspaceFolder}/agents/tools.yaml",
+        "AGENT_RUNTIME_EXTRACTOR": "agents.extractor:OpsExtractor",
+        "AGENT_RUNTIME_ROUTER": "agents.registry:build_router",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "跑全部 Demo 场景（11 个）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/demo/run.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "真模型端到端（需先 export BABEL_*）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/real_model_e2e.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
