@@ -190,6 +190,9 @@ class OpenAICompatAdapter:
         max_tokens: int | None = None,
         price_in_per_m: float = 0.5,
         price_out_per_m: float = 1.5,
+        #: 缓存命中相对全价的折扣系数。DeepSeek / Anthropic 约 0.1，
+        #: 各家不同，所以是参数不是常数。取 1.0 等于"缓存不打折"。
+        cache_hit_ratio: float = 0.1,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         base = (base_url or "").strip()
@@ -217,6 +220,7 @@ class OpenAICompatAdapter:
         self.max_tokens = int(max_tokens) if max_tokens else None
         self.price_in_per_m = float(price_in_per_m)
         self.price_out_per_m = float(price_out_per_m)
+        self.cache_hit_ratio = float(cache_hit_ratio)
         self.sleeper = sleeper
         #: 传输接缝：默认 urllib.request.urlopen。测试用它注入确定性失败
         #: （本机可能挂着系统代理，真实 socket 层的失败形态不可移植）。
@@ -596,13 +600,25 @@ class OpenAICompatAdapter:
             model=model,
         )
 
-    def cost_of(self, input_tokens: int, output_tokens: int) -> float:
-        """USD。价格按「每百万 token」给，所以除 1e6。"""
-        return (input_tokens * self.price_in_per_m
-                + output_tokens * self.price_out_per_m) / 1_000_000.0
+    def cost_of(self, input_tokens: int, output_tokens: int,
+                cache_hit_tokens: int = 0) -> float:
+        """USD。价格按「每百万 token」给，所以除 1e6。
+
+        **缓存命中必须单独计价**：早先只收 input/output，把命中的部分按全价算，
+        于是同一批 token 在"窗口口径"和"成本口径"下得到两个数 —— 而调用方
+        无法判断哪个对。现在两条口径由 `Usage.total` 与 `Usage.billable()`
+        明确分开，这里只负责把它们换成钱。
+        """
+        usage = Usage(input_tokens=int(input_tokens),
+                      output_tokens=int(output_tokens),
+                      cache_hit_tokens=int(cache_hit_tokens))
+        bill = usage.billable(cache_hit_ratio=self.cache_hit_ratio)
+        return (bill["input_equivalent"] * self.price_in_per_m
+                + bill["output"] * self.price_out_per_m) / 1_000_000.0
 
     def _record_usage(self, usage: Usage) -> None:
-        cost = self.cost_of(usage.input_tokens, usage.output_tokens)
+        cost = self.cost_of(usage.input_tokens, usage.output_tokens,
+                            usage.cache_hit_tokens)
         self.last_usage = usage
         self.last_cost_usd = cost
         self._prompt_tokens += usage.input_tokens

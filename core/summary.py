@@ -324,6 +324,30 @@ def _dedupe_keys(block: str) -> set[str]:
 # ══════════════════════════════════════════════════════════════
 # 压缩器
 # ══════════════════════════════════════════════════════════════
+#: 属于「上一条 assistant 的从属结果」的角色。切分时不能与它分开。
+_TOOL_ROLES = frozenset({"tool"})
+
+
+def _safe_cut(messages: Sequence[dict], want: int) -> int:
+    """把切点从 `want` 往前挪到**单元边界**，保证 `messages[want:]` 不以 tool 开头。
+
+    为什么只往前挪不往后挪：往后挪会让 tail 少于目标条数，压缩变弱；
+    往前挪只是多压一条，代价小。
+
+    最坏情况退到 0（全压），此时 tail 为空 —— 这也是合法结果，
+    只是压缩得最狠。循环一定能终止：每次至少减 1。
+    """
+    total = len(messages)
+    cut = max(0, min(int(want), total))
+    while cut > 0 and cut < total:
+        nxt = messages[cut]
+        role = str(nxt.get("role") or "") if isinstance(nxt, dict) else ""
+        if role not in _TOOL_ROLES:
+            break
+        cut -= 1
+    return cut
+
+
 class HistoryCompressor:
     """把 history 头部压成结构化摘要，尾部原样保留。
 
@@ -390,7 +414,17 @@ class HistoryCompressor:
                 ref={"from_index": 0, "to_index": 0},
             )
 
-        cut = total - self.max_keep
+        # **按「不可分单元」切，不按索引盲切。**
+        #
+        # 一条 `assistant` 发起调用 + 它的全部 `tool` 结果是**一个语义单元**：
+        # 把 tool 结果留下、把发起它的 assistant 切掉，模型看到的就是
+        # "一个没有来由的工具输出"。实测随机 2000 次真实形态 history，
+        # 纯索引切在 59.2% 的情况下会切出这种孤儿。
+        #
+        # （注：本仓的工具结果是渲染成**文本**进 Prompt 的，不是 OpenAI 的
+        # `role:"tool"` 协议消息，所以不会像原生实现那样直接 400。但摘要边界
+        # 语义错乱同样是 bug，只是后果更隐蔽 —— 它不报错，只让模型误读。）
+        cut = _safe_cut(messages, total - self.max_keep)
         head, tail = messages[:cut], messages[cut:]
 
         # ② 头部逐条提炼（顺序保持时间序，越新越靠后）

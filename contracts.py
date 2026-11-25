@@ -445,7 +445,35 @@ class Usage:
 
     @property
     def total(self) -> int:
+        """**窗口**占用（上下文长度）。缓存命中仍然占窗口，所以算在内。
+
+        这个值只该用于"上下文还有多少余量"。**不要用它算钱** ——
+        缓存命中通常按 1/10 计价，用它算会把成本算成全额。算钱用 `billable()`。
+        """
         return self.input_tokens + self.output_tokens
+
+    def billable(self, *, cache_hit_ratio: float = 0.1) -> dict[str, int]:
+        """**计费**口径：把输入拆成"未命中"与"命中"两档。
+
+        `cache_hit_ratio` 是缓存命中相对全价的折扣系数（DeepSeek 约 0.1，
+        Anthropic 约 0.1，各家不同 —— 所以是参数不是常数）。
+
+        为什么必须与 `total` 分开：两个口径回答不同问题。
+          * 窗口：`prompt_cache_hit_tokens` 仍然是 prompt 的一部分，占上下文
+          * 成本：它按折扣价计
+        用一个字段喂两个用途，必然有一边算错 —— 实测就是这样：
+        adapter 解析了缓存命中，但 `cost_of()` 只收 input/output，
+        于是缓存按全价计。
+        """
+        hit = max(0, min(int(self.cache_hit_tokens), int(self.input_tokens)))
+        miss = max(0, int(self.input_tokens) - hit)
+        return {
+            "input_miss": miss,
+            "input_hit": hit,
+            "output": int(self.output_tokens),
+            # 折成"等效全价输入 token"，方便与单一价目表相乘
+            "input_equivalent": int(round(miss + hit * float(cache_hit_ratio))),
+        }
 
 
 @dataclass(frozen=True)

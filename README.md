@@ -1,11 +1,11 @@
-# Agent Runtime
+# Turing Agent Runtime
 
-[![verify](https://github.com/XiaoBinGan/agent-runtime/actions/workflows/verify.yml/badge.svg)](https://github.com/XiaoBinGan/agent-runtime/actions/workflows/verify.yml)
+[![verify](https://github.com/XiaoBinGan/Turing_AgentRuntime/actions/workflows/verify.yml/badge.svg)](https://github.com/XiaoBinGan/Turing_AgentRuntime/actions/workflows/verify.yml)
 [![python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![docs](https://img.shields.io/badge/website-live-brightgreen)](https://xiaobingan.github.io/agent-runtime/)
+[![docs](https://img.shields.io/badge/website-live-brightgreen)](https://xiaobingan.github.io/Turing_AgentRuntime/)
 
-A production-shaped runtime for LLM agents. It provides the **shape** — control
+**Turing Agent Runtime** — a production-shaped runtime for LLM agents. It provides the **shape** — control
 loop, state ownership, tool dispatch, governance, observability, persistence —
 and leaves the **content** — prompts, business vocabulary, domain rules — to the
 application layer.
@@ -27,7 +27,7 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **141 modules, 76k lines, 2202
+answer that survived contact with a test suite: **143 modules, 76k lines, 2215
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
@@ -150,7 +150,7 @@ pip install "agent-runtime[server]"       # just the HTTP surface
 Or work from a clone, which also gives you the demo and the test suite:
 
 ```bash
-git clone https://github.com/XiaoBinGan/agent-runtime.git
+git clone https://github.com/XiaoBinGan/Turing_AgentRuntime.git
 cd agent-runtime
 python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
 .venv/bin/python demo/run.py            # 11 end-to-end scenarios
@@ -184,7 +184,7 @@ curl -X POST localhost:8000/v1/turns \
 
 Verified by the suite:
 
-- 2202 unit and integration tests, stable across repeated full runs
+- 2215 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - Concurrency: 100 threads against one gateway, 8 threads x 5 turns, 60 mixed
   workflow requests, zero exceptions
@@ -235,7 +235,7 @@ safe to adopt.
 
 ## 这个项目是什么
 
-一个**生产形态的 LLM Agent 运行时**。它提供**形状** —— 控制循环、状态归属、
+**Turing Agent Runtime** —— 一个**生产形态的 LLM Agent 运行时**。它提供**形状** —— 控制循环、状态归属、
 工具分发、治理、可观测性、持久化；把**内容** —— 提示词、业务词汇、领域规则 ——
 留给应用层。
 
@@ -249,7 +249,7 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**141 个模块、7.6 万行、2202 个用例、11 个端到端场景**，
+测试套件的检验：**143 个模块、7.6 万行、2215 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
@@ -314,7 +314,7 @@ pip install "agent-runtime[server]"       # 只要 HTTP 面
 或者 clone 下来（同时得到 demo 与测试套件）：
 
 ```bash
-git clone https://github.com/XiaoBinGan/agent-runtime.git
+git clone https://github.com/XiaoBinGan/Turing_AgentRuntime.git
 cd agent-runtime
 python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
 .venv/bin/python demo/run.py            # 11 个端到端场景
@@ -333,7 +333,7 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 
 ## 已验证与未验证
 
-**已验证**：2202 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
+**已验证**：2215 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
 零异常；900 回合内存增长 3KB；并发下限流精确（40 并发 limit 10 恰好 10 通过）；
 真模型 4-6 步收敛；真 Milvus 集群、真 Langfuse 投递、真 OTLP；优雅关闭顺序、
 检查点崩溃恢复、workflow 持久化。

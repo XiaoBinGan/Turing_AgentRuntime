@@ -287,3 +287,39 @@ flowchart TB
    而那时可能已执行过有副作用的工具。
 4. **`QuotaGuard` 没有"不限"语义** —— 与 `RATE_LIMIT=0` 口径不一致，
    压测时被默认 60/60s 拦住却报 `quota exceeded`，容易误判成 Gateway 配额没配。
+
+
+---
+
+## 跨项目审计发现的问题（2026-11-26）
+
+对照一份同类实现（TypeScript）的问题清单自查本仓。**四条适用，其中两条是高危默认值。**
+
+| 条目 | 本仓情况 | 处理 |
+|---|---|---|
+| P0-1 孤儿 tool 协议消息 | **结构上不可能** —— 出站是单条 `role:"user"`，工具结果渲染成文本，不发 `role:"tool"` | 无需修（代价见下） |
+| P0-2 压缩盲切 | **存在**。随机 2000 次真实形态，59.2% 切出孤儿 tool 首条 | `_safe_cut` 退到单元边界，孤儿降到 0 |
+| P1-1 CJK 高估 | **存在且是默认值**。`serve.py` 用保守档（1.0 tok/字），实测 0.638 → 高估 1.57×，`budget=20000` 只能用 12760 | 生产默认改标定档；保留 `AGENT_RUNTIME_TOKEN_PROFILE=conservative` 开关 |
+| P1-2 缓存不算钱 | **存在**。adapter 解析了 `cache_hit_tokens`，`cost_of()` 忽略它，按全价计 | `Usage` 拆成 `total`（窗口）与 `billable()`（成本）；`cost_of` 收 `cache_hit_tokens` |
+| P2-1 媒体 | **没做**（content 恒为纯文本） | 未做，如实记录 |
+| P3-2 文档漂移 | 已有 `check_readme_facts.py` 门禁 | 本次新增 `check_config_defaults.py` 覆盖"默认值反了"这一类 |
+
+### 一个真实代价：没有用原生 tool 协议
+
+本仓把工具结果渲染成 Prompt 里的**文本块**，不是 OpenAI 的
+`assistant.tool_calls` + `role:"tool"` 配对消息。
+
+- **好处**：协议上不可能 400（没有配对要求）
+- **代价**：模型看到的工具结果与普通文本同构，**原生 tool 往返的学习信号弱**
+
+这是个明确的取舍，不是疏漏。要换成原生协议，得同时改
+`builder.py`（消息化）与 `adapters/openai_compat.py`（出站映射），
+并且必须补上 P0-1 那类配对校验。
+
+### 方法论上的收获
+
+`check_readme_facts.py` 查得出「模块数漂了」，查不出「默认值反了」。
+后者更危险：文档读者会按文档相信行为，而代码走另一条路。
+
+新增的 `check_config_defaults.py` 补上这一类：**凡是文档承诺的默认值，
+都必须有一条断言指向真实装配路径**。

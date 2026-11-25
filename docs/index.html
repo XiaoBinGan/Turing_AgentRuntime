@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Runtime — 生产形态的 LLM Agent 运行时</title>
-<meta name="description" content="一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。141 模块 / 7.6 万行 / 2202 用例全绿。">
-<meta property="og:title" content="Agent Runtime">
+<title>Turing Agent Runtime — 生产形态的 LLM Agent 运行时</title>
+<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。143 模块 / 7.6 万行 / 2215 用例全绿。">
+<meta property="og:title" content="Turing Agent Runtime">
 <meta property="og:description" content="生产形态的 LLM Agent 运行时。运行时拥有形状，应用拥有内容。">
 <meta property="og:type" content="website">
 <style>
@@ -130,7 +130,7 @@ footer a{color:var(--fg2)}
         <rect x="3" y="14" width="7" height="7" rx="1.5"/>
         <rect x="14" y="14" width="7" height="7" rx="1.5"/>
       </svg>
-      Agent Runtime
+      Turing Agent Runtime
     </a>
     <nav>
       <a href="#why">设计</a>
@@ -138,7 +138,7 @@ footer a{color:var(--fg2)}
       <a href="#verify">验证</a>
       <a href="#origin">由来</a>
       <a href="#start">快速开始</a>
-      <a href="https://github.com/XiaoBinGan/agent-runtime">GitHub</a>
+      <a href="https://github.com/XiaoBinGan/Turing_AgentRuntime">GitHub</a>
     </nav>
   </div>
 </header>
@@ -154,15 +154,15 @@ footer a{color:var(--fg2)}
       治理、可观测性、持久化；把提示词、业务词汇、领域规则留给应用层。
     </p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/XiaoBinGan/agent-runtime">
+      <a class="btn primary" href="https://github.com/XiaoBinGan/Turing_AgentRuntime">
         在 GitHub 查看
       </a>
       <a class="btn" href="#start">快速开始</a>
     </div>
     <div class="stats">
-      <div class="stat"><div class="n">141</div><div class="l">模块</div></div>
+      <div class="stat"><div class="n">143</div><div class="l">模块</div></div>
       <div class="stat"><div class="n">76k</div><div class="l">行代码</div></div>
-      <div class="stat"><div class="n">2202</div><div class="l">测试用例</div></div>
+      <div class="stat"><div class="n">2215</div><div class="l">测试用例</div></div>
       <div class="stat"><div class="n">11</div><div class="l">端到端场景</div></div>
       <div class="stat"><div class="n">15</div><div class="l">冻结契约</div></div>
     </div>
@@ -250,7 +250,7 @@ footer a{color:var(--fg2)}
         └───────────────────────────┘</pre>
     <h3 style="margin-top:40px">架构全景</h3>
     <figure>
-      <img src="assets/architecture.png" alt="Agent Runtime 架构全景：一条主线、四个资源面、两个保障面" loading="lazy">
+      <img src="assets/architecture.png" alt="Turing Agent Runtime 架构全景：一条主线、四个资源面、两个保障面" loading="lazy">
       <figcaption>一条主线、四个资源面（Tool / Memory / Knowledge / Workflow）、两个保障面（Governance / Quality）</figcaption>
     </figure>
 
@@ -342,24 +342,24 @@ footer a{color:var(--fg2)}
       这个仓库就是那份答案，而且它经过了测试套件的检验。
     </p>
     <div class="chapters">
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">01</span>Agent 基础</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">02</span>Prompt / 结构化输出</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">03</span>任务规划 / Workflow</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">04</span>Tool / Function Calling</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">05</span>MCP</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">06</span>Skill</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">07</span>Memory Runtime</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">08</span>RAG</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">09</span>Context 管理</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">10</span>Sandbox / 安全</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">11</span>Multi-Agent</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">12</span>评测 / 可观测</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">13</span>性能优化</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">14</span>企业级架构</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">15</span>系统设计</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">16</span>场景题</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">17</span>Runtime 源码设计</a>
-      <a class="ch" href="https://github.com/XiaoBinGan/agent-runtime"><span class="i">18</span>AI Infra</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">01</span>Agent 基础</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">02</span>Prompt / 结构化输出</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">03</span>任务规划 / Workflow</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">04</span>Tool / Function Calling</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">05</span>MCP</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">06</span>Skill</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">07</span>Memory Runtime</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">08</span>RAG</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">09</span>Context 管理</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">10</span>Sandbox / 安全</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">11</span>Multi-Agent</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">12</span>评测 / 可观测</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">13</span>性能优化</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">14</span>企业级架构</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">15</span>系统设计</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">16</span>场景题</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">17</span>Runtime 源码设计</a>
+      <a class="ch" href="https://github.com/XiaoBinGan/Turing_AgentRuntime"><span class="i">18</span>AI Infra</a>
     </div>
   </div>
 </section>
@@ -369,7 +369,7 @@ footer a{color:var(--fg2)}
     <h2>快速开始</h2>
     <p class="sub">核心零第三方依赖，装完即跑。</p>
 <pre><span class="c"># 克隆与最小安装（requirements-core.txt 是空文件，这是设计）</span>
-git clone https://github.com/XiaoBinGan/agent-runtime.git
+git clone https://github.com/XiaoBinGan/Turing_AgentRuntime.git
 cd agent-runtime
 python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements-core.txt
 
@@ -399,10 +399,10 @@ AGENT_RUNTIME_STORE_PATH=<span class="s">/data/runtime.db</span></pre>
 <footer>
   <div class="wrap">
     <div>
-      <a href="https://github.com/XiaoBinGan/agent-runtime">GitHub</a> ·
-      <a href="https://github.com/XiaoBinGan/agent-runtime/blob/main/docs/design/SPI.md">SPI 文档</a> ·
-      <a href="https://github.com/XiaoBinGan/agent-runtime/blob/main/docs/design/DEPLOY.md">部署手册</a> ·
-      <a href="https://github.com/XiaoBinGan/agent-runtime/blob/main/LICENSE">Apache-2.0</a>
+      <a href="https://github.com/XiaoBinGan/Turing_AgentRuntime">GitHub</a> ·
+      <a href="https://github.com/XiaoBinGan/Turing_AgentRuntime/blob/main/docs/design/SPI.md">SPI 文档</a> ·
+      <a href="https://github.com/XiaoBinGan/Turing_AgentRuntime/blob/main/docs/design/DEPLOY.md">部署手册</a> ·
+      <a href="https://github.com/XiaoBinGan/Turing_AgentRuntime/blob/main/LICENSE">Apache-2.0</a>
     </div>
     <div class="flag">Runtime owns the shape. Application owns the content.</div>
   </div>

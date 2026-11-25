@@ -53,11 +53,11 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://xiaobingan.github.io/agent-runtime/"
-Repository = "https://github.com/XiaoBinGan/agent-runtime"
-Documentation = "https://github.com/XiaoBinGan/agent-runtime/tree/main/docs"
-Changelog = "https://github.com/XiaoBinGan/agent-runtime/blob/main/CHANGELOG.md"
-Issues = "https://github.com/XiaoBinGan/agent-runtime/issues"
+Homepage = "https://xiaobingan.github.io/Turing_AgentRuntime/"
+Repository = "https://github.com/XiaoBinGan/Turing_AgentRuntime"
+Documentation = "https://github.com/XiaoBinGan/Turing_AgentRuntime/tree/main/docs"
+Changelog = "https://github.com/XiaoBinGan/Turing_AgentRuntime/blob/main/CHANGELOG.md"
+Issues = "https://github.com/XiaoBinGan/Turing_AgentRuntime/issues"
 
 [tool.setuptools]
 # 扁平布局：契约层与装配层在根，业务面在子包。

@@ -4284,6 +4284,33 @@ def build_gateway_from_env(*, logger: Any = None,
                                       kind="prompt_template", logger=logger)
     profile = _instantiate(profile_factory) if profile_factory else None
     template = _instantiate(template_factory) if template_factory else None
+    if profile is None:
+        # **默认用实测标定档，不用保守默认档。**
+        #
+        # 这是一条踩过的坑：`DEFAULT_PROFILE` 刻意高估（CJK 1.0 tok/字），
+        # 而实测是 0.638。纯中文语料下默认档高估 **1.57x** ——
+        # `budget=20000` 实际只能用到 12760 tok，白扔 36% 预算，
+        # 而且会提前触发压缩、多烧摘要调用。
+        #
+        # 高危默认值的正确方向：**生产路径用标定值，保守值留给"没有实测数据"的
+        # 纯手工装配**。反过来（默认保守、要自己记得切标定）必然有人忘。
+        #
+        # 可用 `AGENT_RUNTIME_PROMPT_PROFILE` 显式覆盖；也可以设
+        # `AGENT_RUNTIME_TOKEN_PROFILE=conservative` 主动退回高估档
+        # （换到未标定的模型时该这么做）。
+        mode = str(e.get("AGENT_RUNTIME_TOKEN_PROFILE") or "calibrated").strip().lower()
+        if mode in ("conservative", "default", "safe"):
+            from builder import DEFAULT_PROFILE
+            profile = DEFAULT_PROFILE
+        else:
+            from builder import CALIBRATED
+            profile = CALIBRATED
+        try:
+            logger.info("prompt.token_profile", name=getattr(profile, "name", "?"),
+                        cjk_per_token=getattr(profile, "cjk_per_token", 0),
+                        other_chars_per_token=getattr(profile, "other_chars_per_token", 0))
+        except Exception:                   # noqa: BLE001 - 观测面 fail-open
+            pass
     builder = PromptBuilder(total_tokens=prompt_tokens, template=template,
                             profile=profile)
     registry = ToolRegistry()

@@ -62,6 +62,19 @@ else
   grep -E 'FAIL|不符' /tmp/readme-facts.log | head -5 | sed 's/^/     /'
 fi
 
+# ③c 配置默认值核对（文档承诺的默认值必须与生产路径一致）
+#
+# 为什么单独一道：README 的数字门禁查得出"模块数漂了"，
+# 查不出"默认值反了"。真实踩过 —— 文档说该用标定档，生产路径用保守档，
+# 纯中文预算高估 1.57x，白扔 36%。
+printf '③c 配置默认值核对 ... '
+if "$PY" scripts/check_config_defaults.py >/tmp/cfg-defaults.log 2>&1; then
+  echo "OK"
+else
+  echo "FAIL"; FAIL=1
+  grep -E 'FAIL|不一致' /tmp/cfg-defaults.log | head -5 | sed 's/^/     /'
+fi
+
 # ④ 端到端 demo
 if [ "$QUIET" != "-q" ]; then
   printf '④ 端到端场景 ... '

@@ -78,7 +78,7 @@ hidden.
 
 ### Verified
 
-- 2202 unit and integration tests, stable across repeated full runs
+- 2215 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - 100-thread concurrency against one gateway; zero exceptions
 - Memory bounded: 900 turns grow 3KB with a capped audit log
@@ -160,6 +160,36 @@ Found while building the operational surface:
 - `schema_version` mismatches made all stored payloads unreadable. There is now
   a migration table applied one version at a time.
 
+### Fixed after a cross-project audit
+
+An issue list from a sibling TypeScript implementation prompted a self-audit.
+Four issues applied here:
+
+- **CJK token estimate overestimated by 1.57x in production.** `DEFAULT_PROFILE`
+  is deliberately conservative (1.0 token per CJK character) and `CALIBRATED`
+  holds the measured 0.68, but `serve.py` used the conservative one. Pure
+  Chinese prompts stopped at ~64% of the budget, wasting 36% and triggering
+  compaction early. Production now defaults to calibrated; the conservative
+  profile is available via `AGENT_RUNTIME_TOKEN_PROFILE=conservative` for
+  models that have not been measured.
+- **Cache hits were billed at full price.** The adapter parsed
+  `prompt_cache_hit_tokens` into `Usage.cache_hit_tokens` but `cost_of()`
+  only took input and output, so cached tokens were charged fully. Usage now
+  exposes two explicit views: `total` for the context window (cache hits do
+  occupy it) and `billable()` for cost (cache hits are discounted).
+  `cache_hit_ratio` is a constructor parameter because the discount varies by
+  provider.
+- **Compaction cut blindly by index.** `HistoryCompressor` sliced at
+  `len(history) - max_keep`, which splits an assistant turn from its tool
+  results. Measured on 2000 random realistic histories: 59.2% produced a tail
+  starting with an orphan tool entry. Cuts now step back to a unit boundary.
+- **A new gate checks documentation against default values.**
+  `scripts/check_config_defaults.py` asserts that the profile production
+  actually uses matches the documented one, that the conservative switch really
+  works, and that every `AGENT_RUNTIME_*` name mentioned in the docs exists in
+  `serve.py`. The existing README gate could catch a stale module count but not
+  a reversed default, which is what the first issue was.
+
 ### Tooling
 
 - `verify.sh`: six gates (compile, tests, contract self-consistency, README
@@ -171,4 +201,4 @@ Found while building the operational surface:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
-[0.1.0]: https://github.com/XiaoBinGan/agent-runtime/releases/tag/v0.1.0
+[0.1.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.1.0
