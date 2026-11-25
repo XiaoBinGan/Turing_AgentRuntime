@@ -85,9 +85,9 @@ One mainline, four resource planes, two guarantee planes. Governance fails
 closed (no decision means no); quality fails open (a broken evaluator must not
 stop a turn).
 
-![Architecture overview](docs/images/architecture.png)
+![Architecture overview](docs/design/images/architecture.png)
 
-![Request sequence](docs/images/request-sequence.png)
+![Request sequence](docs/design/images/request-sequence.png)
 
 ### The seven decisions that matter
 
@@ -121,19 +121,19 @@ stop a turn).
    separate concerns with separate failure modes. Audit never records raw goals.
    Metric labels are normalized so a client cannot explode cardinality.
 
-![Failure posture](docs/images/failure-posture.png)
+![Failure posture](docs/design/images/failure-posture.png)
 
 Deeper design documents live in [`docs/`](docs/):
 
 | Document | Contents |
 |---|---|
-| [STATUS.md](docs/STATUS.md) | Module map with dependency graphs |
-| [SPI.md](docs/SPI.md) | Every extension point and its contract |
-| [TOOLS.md](docs/TOOLS.md) | Tool manifest, risk tiers, approval flow |
-| [DEPLOY.md](docs/DEPLOY.md) | 20+ environment variables, failure modes |
-| [ROBUSTNESS.md](docs/ROBUSTNESS.md) | Destructive test findings and fixes |
-| [DESIGN-C.md](docs/DESIGN-C.md) | Parallel tools, sub-agent progress, workflow engine |
-| [DEVLOG.md](docs/DEVLOG.md) | Round-by-round engineering log |
+| [STATUS.md](docs/design/STATUS.md) | Module map with dependency graphs |
+| [SPI.md](docs/design/SPI.md) | Every extension point and its contract |
+| [TOOLS.md](docs/design/TOOLS.md) | Tool manifest, risk tiers, approval flow |
+| [DEPLOY.md](docs/design/DEPLOY.md) | 20+ environment variables, failure modes |
+| [ROBUSTNESS.md](docs/design/ROBUSTNESS.md) | Destructive test findings and fixes |
+| [DESIGN-C.md](docs/design/DESIGN-C.md) | Parallel tools, sub-agent progress, workflow engine |
+| [DEVLOG.md](docs/design/DEVLOG.md) | Round-by-round engineering log |
 
 ---
 
@@ -258,9 +258,9 @@ safe to adopt.
 一条主线、四个资源面、两个保障面。治理面 fail-closed（判不出来就是拒绝），
 质量面 fail-open（评测器坏了不能拦住回合）。
 
-![架构全景](docs/images/architecture.png)
+![架构全景](docs/design/images/architecture.png)
 
-![请求时序](docs/images/request-sequence.png)
+![请求时序](docs/design/images/request-sequence.png)
 
 ### 七个关键决定
 

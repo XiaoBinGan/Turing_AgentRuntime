@@ -1,8 +1,22 @@
 name: pages
 
+# 部署 docs/ 到 GitHub Pages。
+#
+# 现状说明：仓库的 Pages `build_type` 目前是 `workflow`，所以必须有这个文件。
+# 目标状态是 `legacy`（直接从 `main` 的 `/docs` 读，不经过 artifact 传递）——
+# 那更稳，少一跳就少一类故障。但 GitHub 的 Pages API 在切换期间持续返回 500，
+# 所以切换推迟。等 API 恢复后：
+#
+#   gh api -X PUT repos/XiaoBinGan/agent-runtime/pages \
+#     -f build_type=legacy -f 'source[branch]=main' -f 'source[path]=/docs'
+#
+# 然后删掉本文件。
 on:
   push:
     branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -12,7 +26,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false    # 取消会让已上传的 artifact 失效
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -23,43 +37,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify site directory is not empty
-        # `deploy-pages` 报 "Found 0 artifact(s)" 时，第一怀疑对象是这里空了。
-        # 在源头说清楚，否则排查会绕很远。
+      - name: Verify docs site is not empty
         run: |
-          count=$(find site -type f | wc -l)
-          echo "site files: $count"
-          test "$count" -gt 0 || { echo "::error::site/ 是空的，没有可部署内容"; exit 1; }
+          test -f docs/index.html || { echo "::error::docs/index.html 缺失"; exit 1; }
+          echo "site files: $(find docs -type f | wc -l)"
 
       - uses: actions/configure-pages@v5
-
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: site
-
-      - name: Wait until the artifact is visible to the API
-        # **这一步是必要的，不是防御性编程**。
-        # 实测过：upload 步骤报成功、artifact 也确实建好了（446KB），
-        # 但紧接着的 deploy-pages 仍拿到 "Found 0 artifact(s)"。
-        # 上传完成与 artifacts 列表可见之间存在延迟，两者是两次独立请求。
-        # 轮询到可见再继续，比靠重试整个 job 便宜得多。
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID: ${{ github.run_id }}
-          REPO: ${{ github.repository }}
-        run: |
-          for i in $(seq 1 30); do
-            n=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
-                  --jq '[.artifacts[] | select(.name == "github-pages")] | length')
-            if [ "$n" -ge 1 ]; then
-              echo "artifact 已可见（第 ${i} 次查询）"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::60 秒内 artifact 始终不可见，上传可能真的失败了"
-          gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.total_count' || true
-          exit 1
-
+          path: docs
       - id: deployment
         uses: actions/deploy-pages@v5
