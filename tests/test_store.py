@@ -861,3 +861,40 @@ def snapshot_hash(first_result):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main(verbosity=2)
+
+
+class TestFileStoreWritability(unittest.TestCase):
+    """`FileStore` 构造期就要验可写。
+
+    只 mkdir 不验写，会让"目录存在但只读"这种部署错误一路顺利启动，
+    直到第一次 checkpoint 才失败 —— 而那时可能已经执行过有副作用的工具。
+    磁盘/权限问题属于部署错误，必须在启动时暴露。
+    """
+
+    def test_read_only_root_rejected(self):
+        import os
+        import tempfile
+        from core.store import FileStore, StoreError
+        d = tempfile.mkdtemp()
+        ro = os.path.join(d, "ro")
+        os.makedirs(ro)
+        os.chmod(ro, 0o500)
+        try:
+            with self.assertRaises(StoreError) as caught:
+                FileStore(ro)
+            self.assertIn("不可写", str(caught.exception))
+        finally:
+            os.chmod(ro, 0o700)
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_writable_root_ok(self):
+        import shutil
+        import tempfile
+        from core.store import FileStore
+        d = tempfile.mkdtemp()
+        try:
+            store = FileStore(d)
+            self.assertTrue(store.root.exists())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)

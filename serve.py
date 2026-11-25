@@ -1496,6 +1496,11 @@ class WorkflowRegistry:
         except Exception:                                      # noqa: BLE001
             return None
 
+    def running_count(self) -> int:
+        """当前 running 的 workflow 数（喂给 `workflow_running` gauge）。"""
+        with self._lock:
+            return sum(1 for s in self._states.values() if not s.is_finished)
+
     def _mark_running(self, state: WorkflowState) -> None:
         with self._lock:
             if state.status == WF_PENDING:
@@ -2285,6 +2290,14 @@ def _bootstrap_metrics(metrics: Any) -> None:
     """
     for call in (lambda: metrics.describe("up", "Runtime process is up (1 = alive)"),
                  lambda: metrics.gauge("up", 1.0, {"version": VERSION}),
+                 # 这三个是**告警规则要查的**指标。没有它们，三条告警就写不出来，
+                 # 只能靠人工核对 /v1/info —— 而那在夜里没人做。
+                 lambda: metrics.describe(
+                     "info", "Runtime build/config info (always 1)"),
+                 lambda: metrics.describe(
+                     "checkpoint_errors_total", "Side-effect checkpoint write failures"),
+                 lambda: metrics.describe(
+                     "workflow_running", "Workflows currently running"),
                  lambda: metrics.describe("http_requests_total",
                                           "HTTP requests by path and status")):
         try:
@@ -3105,6 +3118,97 @@ def _resolve_trusted_proxies(env: Mapping[str, str],
     return tuple(x.strip() for x in raw.split(",") if x.strip())
 
 
+def _metric_counter_sink(metrics: Any) -> Any:
+    """把 `metrics` 包成 Gateway 要的 `(name, delta, labels) -> None`。
+
+    Gateway 在 `core/`，必须零第三方依赖；`prometheus_client` 是可选件。
+    用回调把"记指标"这件事留在接入层，core 只负责"什么时候该记"。
+    """
+    def _sink(name: str, delta: float = 1.0, labels: dict | None = None) -> None:
+        try:
+            metrics.counter(name, delta, labels or {})
+        except Exception:                   # noqa: BLE001 - 观测面 fail-open
+            pass
+    return _sink
+
+
+def _assert_kv_reachable(kv: Any) -> None:
+    """分布式模式下，启动时**真连一次** KV。
+
+    为什么必需：`RESPKV` 是**惰性连接** —— 构造不碰网络，`info().shared`
+    也恒为 True。于是"配了分布式限流 + Redis 根本连不上"会**启动成功**，
+    然后在第一个请求时才失败。实测过：Redis 端口关着，服务照样起来，
+    `/readyz` 也是 200。
+
+    淡性连接对"可选依赖"是对的（不该因为没配就拖慢启动），
+    但对"必须共享"的配置是错的 —— 它把配置错误推迟成了运行期故障。
+    """
+    ping = getattr(kv, "ping", None)
+    if not callable(ping):
+        return                       # 后端没有 ping 就跳过（不假装探过）
+    try:
+        alive = ping()
+    except Exception as exc:          # noqa: BLE001
+        raise RuntimeError(
+            f"AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1 但 KV 连不上："
+            f"{type(exc).__name__}: {exc}") from exc
+    if not alive:
+        raise RuntimeError(
+            "AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1 但 KV 探活失败"
+            "（检查 Redis 地址/端口/密码；这类配置错误必须在启动时暴露，"
+            "而不是等到第一个请求）")
+
+
+class RedisQuotaCounter:
+    """跨副本租户配额计数器（`Gateway(quota_counter=...)`）。
+
+    只用 `INCR` + `EXPIRE` 两个原子命令：
+      * `INCR` 保证多副本读到的 `used` 是同一个数
+      * `EXPIRE` 只在**首次**设（`used == 1` 时），否则会把窗口无限延长
+
+    与 `KvRateWindow` 的分工：那个管**每 IP 的 HTTP 请求**，这个管
+    **每租户的回合数**（成本闸）。两者都必须在多副本下共享，否则阈值 × 副本数。
+    """
+
+    #: 窗口长度（秒）。与 Gateway 的内存窗口保持同一口径。
+    WINDOW_S = 60.0
+
+    def __init__(self, client: Any, *, window_s: float = WINDOW_S) -> None:
+        self._client = client
+        self._window_s = float(window_s)
+
+    def incr(self, key: str) -> tuple[int, float]:
+        """原子自增并返回 `(当前值, 剩余 TTL 秒)`。"""
+        used = int(self._client.incr(key))
+        if used == 1:
+            self._client.expire(key, int(self._window_s))
+        ttl = self._client.ttl(key)
+        # Redis 的 `ttl` 对无过期键返回 -1、不存在返回 -2，都归零处理
+        return used, float(ttl) if ttl and ttl > 0 else 0.0
+
+
+def _build_quota_counter(env: Mapping[str, str], enabled: bool) -> Any:
+    """`AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1` 时给 Gateway 一个跨副本计数器。
+
+    与 HTTP 层共用同一个开关：多副本部署不该记两个名字。
+    KV 不是共享实现时**不静默降级** —— 建配置就报错，
+    因为"以为跨副本、其实各算各的"正是这条配置要防的事。
+    """
+    if not enabled:
+        return None
+    kv = _make_kv(env)
+    if not getattr(getattr(kv, "info", lambda: None)(), "shared", False):
+        raise RuntimeError(
+            "AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1 但租户配额拿不到共享 KV"
+            "（检查 AGENT_RUNTIME_KV=redis）")
+    _assert_kv_reachable(kv)
+    client = getattr(kv, "client", None) or getattr(kv, "_client", None)
+    if client is None:
+        raise RuntimeError(
+            f"KV {type(kv).__name__} 没暴露 redis client，无法做原子配额计数")
+    return RedisQuotaCounter(client)
+
+
 def _build_rate_window(env: Mapping[str, str], explicit: bool | None,
                        *, limit: int, logger: Any = None) -> Any:
     """分布式限流窗口：显式参数 > `AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED`。
@@ -3130,6 +3234,7 @@ def _build_rate_window(env: Mapping[str, str], explicit: bool | None,
         raise RuntimeError(
             "AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1 但当前 KV 是进程内的"
             "（检查 AGENT_RUNTIME_KV=redis 与 REDIS_* 配置）")
+    _assert_kv_reachable(kv)
     return KvRateWindow(kv, limit_per_minute=limit, logger=logger)
 
 
@@ -3264,7 +3369,8 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
         gw_store = next((spec.obj for spec in specs
                          if spec.name == "store" and not isinstance(spec.obj, _Unavailable)),
                         None)
-        gateway = build_gateway_from_env(logger=logger, store=gw_store)
+        gateway = build_gateway_from_env(logger=logger, store=gw_store,
+                                         metrics=metrics)
     # 真增量流式：在**观测层里面**包（顺序很重要）。
     #
     #   InstrumentedGateway(StreamingGateway(真实 Gateway))
@@ -3395,6 +3501,28 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
     )
     #: 谁装配谁负责收口：注入方自己管生命周期（与 `built_here` 处理 gateway 同一口径）
     app.state.workflows_built_here = True
+
+    # 把 running 数喂给指标（告警规则 `WorkflowStuck` 查的就是它）。
+    # 用 gauge 覆盖写：gauge 是"当前值"，累加就是 bug。
+    def _observe_workflows() -> None:
+        try:
+            metrics.gauge("workflow_running",
+                          float(app.state.workflows.running_count()))
+        except Exception:               # noqa: BLE001 - 观测面 fail-open
+            pass
+    app.state.observe_workflows = _observe_workflows
+    _observe_workflows()
+
+    # 配置自述做成指标：`rate_limit_distributed` 只在 /v1/info 里，
+    # 而告警规则查不到 JSON —— 没有这条就写不出"多副本没开分布式限流"的告警。
+    try:
+        metrics.gauge("info", 1.0, {
+            "version": VERSION,
+            "rate_limit_distributed": str(bool(
+                _truthy(env.get("AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED")))).lower(),
+        })
+    except Exception:                   # noqa: BLE001
+        pass
     # 启动时把上次没跑完的 workflow 读回来（标 interrupted，**不自动续跑** ——
     # 重放会重复执行已完成节点，发布流程里那是灾难）。
     try:
@@ -3794,6 +3922,7 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
                          "detail": f"{type(exc).__name__}: {exc}"},
                 status_code=500)
         _observe_http(metrics, "/v1/workflows", 202)
+        getattr(app.state, "observe_workflows", lambda: None)()
         return JSONResponse(content=state.to_dict(), status_code=202,
                             headers={"Location": f"/v1/workflows/{workflow_id}"})
 
@@ -4108,7 +4237,8 @@ def _truthy(value: Any) -> bool:
 
 def build_gateway_from_env(*, logger: Any = None,
                            env: Mapping[str, str] | None = None,
-                           store: Any = None) -> Any:
+                           store: Any = None,
+                           metrics: Any = None) -> Any:
     """按环境变量装配一个**真实**的 Gateway（Loop + Governance + Store）。
 
     这是"最小可用运行时"：一个 PromptBuilder、一个 LLM adapter、一张（默认为空的）
@@ -4191,8 +4321,25 @@ def build_gateway_from_env(*, logger: Any = None,
                     source=str(e.get("AGENT_RUNTIME_TOOLS") or ""))
 
     dispatcher = Dispatcher(registry)
+
+    # 治理面配额（`QuotaGuard`）与 Gateway 的 `rate_limit_per_minute` 是**两道独立的闸**：
+    # 前者按 `kind` 分桶（`runtime_turn` / 工具 / LLM 调用各算各的），后者只管回合数。
+    # 早先 serve 没暴露前者，于是压测时会被它的默认值 60/60s 拦住 ——
+    # 而报错只说 "quota exceeded"，很容易误判成 Gateway 的配额没配。
+    # `AGENT_RUNTIME_GOVERNANCE_QUOTA=0` 关闭它（与 `RATE_LIMIT=0` 同口径）。
+    from plane.governance import QuotaGuard
+    _gq_raw = e.get("AGENT_RUNTIME_GOVERNANCE_QUOTA")
+    if _gq_raw is None:
+        _quota_guard = QuotaGuard()
+    else:
+        # `0` = 关闭（与 `AGENT_RUNTIME_RATE_LIMIT=0` 同口径）。
+        # 必须显式写进 `per_minute`：空表会 fallback 到 DEFAULT_LIMIT=60，
+        # 那是"配置了却更严"的静默反转。
+        _n = int(_gq_raw)
+        _quota_guard = QuotaGuard(per_minute={
+            "runtime_turn": _n, "tool_call": _n, "llm_call": _n})
     governance = Governance(rbac=RBAC(), input_guard=InputGuard(),
-                            output_guard=OutputGuard())
+                            output_guard=OutputGuard(), quota=_quota_guard)
 
     def _scripted(goal: str) -> Any:
         """确定性回执。**不回显 goal**：服务自己的日志/响应不该成为注入回显通道。"""
@@ -4302,6 +4449,13 @@ def build_gateway_from_env(*, logger: Any = None,
 
     gateway = Gateway(_loop_factory, governance=governance, store=gw_store,
                       rate_limit_per_minute=rate_limit,
+                      # 多副本：租户配额走共享计数，否则阈值 × 副本数
+                      quota_counter=_build_quota_counter(
+                          e, _truthy(e.get("AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED"))),
+                      # 指标回调：core/ 不能依赖 prometheus_client（可选件），
+                      # 这里把 metrics 包成 `(name, delta, labels)` 形状传进去
+                      metric_sink=(_metric_counter_sink(metrics)
+                                   if metrics is not None else None),
                       on_turn_start=on_start, on_turn_end=on_end)
 
     # 会话多轮承接：默认**关闭**（向后兼容 —— 单轮调用方不受影响）。

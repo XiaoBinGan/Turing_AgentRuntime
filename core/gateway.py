@@ -360,6 +360,8 @@ class Gateway:
         on_turn_start: Callable[..., Any] | None = None,
         on_turn_end: Callable[..., Any] | None = None,
         required_dispatch: "frozenset[str] | None" = None,
+        quota_counter: Any = None,
+        metric_sink: Any = None,
     ) -> None:
         if not callable(loop_factory):
             raise TypeError("loop_factory 必须可调用：Callable[[str, TenantContext], Loop]")
@@ -380,6 +382,23 @@ class Gateway:
         #: 而不是让审批/超时/预算在运行期静默消失。
         self.required_dispatch = (frozenset(required_dispatch)
                                   if required_dispatch is not None else None)
+        #: **跨副本**租户配额计数器：`incr(tenant) -> (used, ttl_s)`，`None` = 进程内窗口。
+        #:
+        #: 为什么需要它：`_windows` 是每进程内存。多副本部署时，
+        #: `limit=60` 在 5 个副本上实际放行 300 —— 而**租户配额是成本闸**，
+        #: 放大 5 倍就是成本放大 5 倍。HTTP 层的 `KvRateWindow` 早就解决了
+        #: 同一个问题，但管不到这里（那是每 IP，这是每租户）。
+        #:
+        #: 语义差别（必须说清）：进程内是**滑动窗口**（精确），
+        #: KV 计数是**固定窗口**（`incr`+TTL 原子，但无 zset）。
+        #: 取舍：分布式原子性 > 窗口精度。跨副本各算各的滑动窗口比"两倍突发"更糟。
+        self._quota_counter = quota_counter
+        #: 指标回调：`(name, delta, labels) -> None`。`None` = 不记。
+        #:
+        #: 为什么用回调而不是让 Gateway 依赖 metrics：Gateway 是 core/，
+        #: 必须零第三方依赖（`prometheus_client` 是可选件）。接入层把
+        #: metrics 包成这个形状传进来。
+        self._metric_sink = metric_sink
         self._clock = clock or time.monotonic
         self._clock_ms = clock_ms or now_ms
         self._context_factory = context_factory
@@ -781,6 +800,57 @@ class Gateway:
         return reason
 
     # ── ④ 配额（按租户） ───────────────────────────────────
+    def _charge_distributed(self, tenant: str) -> dict:
+        """跨副本配额：用注入的计数器做原子 `incr`。
+
+        计数器契约（鸭子类型，不引入新协议）：
+            `incr(key: str) -> tuple[int, float]`   # (当前值, 剩余 TTL 秒)
+
+        实现方负责"原子 + 首次设 TTL"，Gateway 只做判定 ——
+        它不该知道后端是 Redis 还是别的。
+
+        计数器抛异常时 **fail-closed**：算不出配额就不放行。
+        宁可让用户重试，也不要在成本闸失效时继续放行 ——
+        这类失效不报错，只会让账单变大。
+        """
+        limit = self.rate_limit_per_minute
+        key = f"quota:{TURN_QUOTA_KIND}:{tenant}"
+        try:
+            used, ttl = self._quota_counter.incr(key)
+        except Exception as exc:                              # noqa: BLE001
+            raise _Reject("rate_limited",
+                          f"quota counter fail-closed: {type(exc).__name__}: {exc}",
+                          vertex={"quota_remaining": 0}) from exc
+        used = int(used)
+        if used > limit:
+            retry_after = max(0.0, float(ttl))
+            raise _Reject(
+                "rate_limited",
+                f"tenant {tenant} 超过 {limit} 回合/{self.window_seconds:.0f}s"
+                f"（跨副本已用 {used}，retry_after≈{retry_after:.1f}s）",
+                vertex={"quota": {"tenant": tenant, "used": used, "limit": limit,
+                                  "remaining": 0, "retry_after_s": round(retry_after, 3),
+                                  "distributed": True},
+                        "quota_remaining": 0},
+            )
+        charge = getattr(self.governance, "charge", None)
+        if callable(charge):
+            try:
+                verdict = charge(tenant, TURN_QUOTA_KIND)
+            except Exception as exc:                          # noqa: BLE001
+                raise _Reject("rate_limited",
+                              f"governance quota fail-closed: "
+                              f"{type(exc).__name__}: {exc}",
+                              vertex={"quota_remaining": 0}) from exc
+            allowed = getattr(verdict, "allowed", False) if verdict is not None else True
+            if not allowed:
+                raise _Reject("rate_limited",
+                              str(getattr(verdict, "reason",
+                                          "governance quota exceeded")),
+                              vertex={"quota_remaining": 0})
+        return {"used": used, "remaining": max(0, limit - used),
+                "limit": limit, "distributed": True}
+
     def _charge(self, tenant: str) -> dict:
         """计一格配额（按租户滑动窗口）。**整段临界区**（W25 并发加固）。
 
@@ -794,6 +864,10 @@ class Gateway:
         取舍：宁可排队，也不要静默超额。跨租户隔离靠 `_windows` 按 tenant 分桶，
         锁只是保证**每次判定看到的窗口是自洽的**。
         """
+        # 分布式配额优先：跨副本共享计数（多副本部署的唯一正确选择）
+        if self._quota_counter is not None and self.rate_limit_per_minute > 0:
+            return self._charge_distributed(tenant)
+
         with self._lock:
             limit = self.rate_limit_per_minute
             now = float(self._clock())
@@ -1096,6 +1170,12 @@ class Gateway:
             # 不放进 `turn.error`：回合本身是成功的，把成功改成失败是撒谎。
             turn.vertex["checkpoint_errors"] = _ck_errors[:10]
             turn.vertex["checkpoint_errors_count"] = len(_ck_errors)
+            sink = self._metric_sink
+            if callable(sink):
+                try:
+                    sink("checkpoint_errors_total", len(_ck_errors), {})
+                except Exception:                          # noqa: BLE001
+                    pass
             logger = getattr(self, "logger", None)
             if logger is not None:
                 try:

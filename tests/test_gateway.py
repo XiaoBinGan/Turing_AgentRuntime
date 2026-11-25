@@ -811,3 +811,65 @@ class TestConstruction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestQuotaCounterContract(unittest.TestCase):
+    """分布式配额计数器的契约与失败姿态。"""
+
+    def test_counter_used_when_provided(self):
+        class Counter:
+            def __init__(self):
+                self.n = 0
+
+            def incr(self, key):
+                self.n += 1
+                return self.n, 60.0
+        c = Counter()
+        gw = Gateway(lambda g, tc: FakeLoop(), governance=Governance(),
+                     rate_limit_per_minute=2, quota_counter=c)
+        r1 = gw.handle(request())
+        self.assertTrue(r1.ok)
+        self.assertEqual(c.n, 1, "计数器没被调用（还在走进程内窗口）")
+
+    def test_counter_refuses_over_limit(self):
+        class Counter:
+            def __init__(self):
+                self.n = 0
+
+            def incr(self, key):
+                self.n += 1
+                return self.n, 60.0
+        gw = Gateway(lambda g, tc: FakeLoop(), governance=Governance(),
+                     rate_limit_per_minute=1, quota_counter=Counter())
+        self.assertTrue(gw.handle(request()).ok)
+        second = gw.handle(request())
+        self.assertFalse(second.ok)
+        self.assertIn("rate_limited", second.error)
+        self.assertIn("跨副本", second.error, "拒绝原因要说明是跨副本计数")
+
+    def test_counter_failure_is_fail_closed(self):
+        """计数器抛异常 → 拒绝，不是放行。"""
+        class Broken:
+            def incr(self, key):
+                raise RuntimeError("redis down")
+        gw = Gateway(lambda g, tc: FakeLoop(), governance=Governance(),
+                     rate_limit_per_minute=10, quota_counter=Broken())
+        r = gw.handle(request())
+        self.assertFalse(r.ok, "计数器故障时放行了（成本闸失效）")
+        self.assertIn("fail-closed", r.error)
+
+    def test_zero_limit_unlimited_even_with_counter(self):
+        """`limit=0` 时不启用计数器（0 = 关闭）。"""
+        class Counter:
+            def __init__(self):
+                self.n = 0
+
+            def incr(self, key):
+                self.n += 1
+                return self.n, 60.0
+        c = Counter()
+        gw = Gateway(lambda g, tc: FakeLoop(), governance=Governance(),
+                     rate_limit_per_minute=0, quota_counter=c)
+        for _ in range(3):
+            self.assertTrue(gw.handle(request()).ok)
+        self.assertEqual(c.n, 0, "limit=0 不该走计数器")

@@ -78,7 +78,7 @@ hidden.
 
 ### Verified
 
-- 2187 unit and integration tests, stable across repeated full runs
+- 2202 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - 100-thread concurrency against one gateway; zero exceptions
 - Memory bounded: 900 turns grow 3KB with a capped audit log
@@ -87,15 +87,29 @@ hidden.
 - Real Milvus cluster, real Langfuse ingestion, real OTLP delivery
 - Graceful shutdown ordering; checkpoint crash recovery; workflow persistence
 
+### Operational surface (verified)
+
+- Multi-replica: two replicas on a shared Redis, tenant quota exact across both.
+  `scripts/verify_multi_replica.sh`
+- Capacity baseline: single replica 145 RPS plateau, 2 replicas 192 RPS.
+  `scripts/loadtest.py`, `docs/design/CAPACITY.md`
+- Backup and restore: sqlite via the backup API, file store by directory,
+  corrupted payloads refused. `scripts/verify_backup_restore.sh`
+- Schema migration: versioned envelope migrations applied stepwise; unknown
+  and future versions refused. `tests/test_store_migration.py`
+- SLO and alerting: six SLIs with targets from the measured baseline, nine
+  rules validated by promtool. `docs/design/SLO.md`, `deploy/prometheus/`
+- On-call runbook: per alert, how to confirm, what to do first, what not to do.
+  `docs/design/RUNBOOK.md`
+- Chaos drill: KV down, store read-only, upstream unreachable, client abort.
+  `scripts/chaos_drill.sh`
+
 ### Not verified
 
-Stated plainly because an enterprise decision depends on it:
-
-- Multi-replica deployment against a shared Redis has never been exercised
-- No load test: no p50/p95/p99 under sustained QPS
-- No backup/restore drill; no schema migration path for stored payloads
-- No SLO definitions, alerting rules, or on-call runbook
-- No chaos engineering catalogue
+- Long-running soak: the load test runs 12 seconds, not an hour
+- Real-LLM capacity: upstream latency dominates and would change every number
+- Multi-worker: `uvicorn --workers N` to work around the GIL is untested
+- Cross-replica sessions: session state lives in each replica's own store
 
 ### Known limitations
 
@@ -128,6 +142,23 @@ Stated plainly because an enterprise decision depends on it:
 - `Loop._manifest()` failed when the dispatcher exposed `manifests()` as a
   method rather than an attribute, so side-effect checkpointing treated every
   tool as unknown and checkpointed read-only calls too.
+
+Found while building the operational surface:
+
+- Tenant quota was per-process. `AGENT_RATE_LIMIT_DISTRIBUTED` only affected the
+  HTTP per-IP layer, so a Gateway quota of 60 allowed 300 across five replicas.
+  `Gateway(quota_counter=...)` now does atomic increments against shared KV.
+- `RESPKV` connects lazily, so `info().shared` was always true and a
+  misconfigured distributed setup started successfully and failed on the first
+  request. Startup now probes the KV when distribution is required.
+- `FileStore` created its root directory without checking writability, so a
+  read-only mount started cleanly and failed at the first checkpoint, possibly
+  after a tool with side effects had already run.
+- `QuotaGuard` had no way to express "unlimited", diverging from the
+  `AGENT_RATE_LIMIT=0` convention. Load testing was blocked by the default
+  60/60s with only "quota exceeded" to go on.
+- `schema_version` mismatches made all stored payloads unreadable. There is now
+  a migration table applied one version at a time.
 
 ### Tooling
 

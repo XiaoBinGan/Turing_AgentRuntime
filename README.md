@@ -27,7 +27,7 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **139 modules, 76k lines, 2187
+answer that survived contact with a test suite: **141 modules, 76k lines, 2202
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
@@ -184,7 +184,7 @@ curl -X POST localhost:8000/v1/turns \
 
 Verified by the suite:
 
-- 2187 unit and integration tests, stable across repeated full runs
+- 2202 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - Concurrency: 100 threads against one gateway, 8 threads x 5 turns, 60 mixed
   workflow requests, zero exceptions
@@ -194,16 +194,27 @@ Verified by the suite:
 - Real Milvus cluster, real Langfuse ingestion, real OTLP delivery
 - Graceful shutdown ordering, checkpoint crash recovery, workflow persistence
 
-Not verified, stated honestly:
+Operational surface, all exercised with reproducible scripts:
 
-- Multi-replica deployment against a shared Redis has never been exercised
-- No load test: no p50/p95/p99 under sustained QPS
-- No backup/restore drill, no schema migration path for stored payloads
-- No SLO definitions, alerting rules, or on-call runbook
-- No chaos engineering catalogue
+| Capability | Evidence | Script |
+|---|---|---|
+| Multi-replica | 2 replicas on shared Redis; quota exact across both (limit=4, 4 pass, 5th refused on either replica) | `scripts/verify_multi_replica.sh` |
+| Capacity baseline | Single replica 145 RPS / p99 14ms at concurrency 1; 192 RPS with 2 replicas | `scripts/loadtest.py` |
+| Backup and restore | sqlite via backup API, file store, corruption rejected | `scripts/verify_backup_restore.sh` |
+| Schema migration | Versioned envelope migrations, applied stepwise, refuses unknown and future versions | `tests/test_store_migration.py` |
+| SLO and alerting | Six SLIs with targets derived from measured baseline; 9 rules validated by promtool | `docs/design/SLO.md`, `deploy/prometheus/` |
+| On-call runbook | Per-alert: how to confirm, what to do first, what not to do | `docs/design/RUNBOOK.md` |
+| Chaos drill | KV down, store read-only, upstream down, client abort: all fail in the expected posture | `scripts/chaos_drill.sh` |
 
-The engine is solid; the operational surface is not yet built. If you need an
-enterprise SLA, treat the second list as your roadmap.
+Still not done:
+
+- **Long-running soak**: the load test runs 12 seconds, not an hour
+- **Real-LLM capacity**: upstream latency dominates and would change every number
+- **Multi-worker**: `uvicorn --workers N` to get around the GIL is untested
+- **Cross-replica sessions**: session state lives in each replica's own store
+
+The engine and the operational surface are both built now. What remains is
+soak testing and real-upstream measurement, not missing capability.
 
 ---
 
@@ -238,7 +249,7 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**139 个模块、7.6 万行、2187 个用例、11 个端到端场景**，
+测试套件的检验：**141 个模块、7.6 万行、2202 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
@@ -322,16 +333,31 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 
 ## 已验证与未验证
 
-**已验证**：2187 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
+**已验证**：2202 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
 零异常；900 回合内存增长 3KB；并发下限流精确（40 并发 limit 10 恰好 10 通过）；
 真模型 4-6 步收敛；真 Milvus 集群、真 Langfuse 投递、真 OTLP；优雅关闭顺序、
 检查点崩溃恢复、workflow 持久化。
 
-**未验证**：多副本打共享 Redis 从未跑过；没有压测，没有 p50/p95/p99；没有备份恢复
-演练，没有存量数据的 schema 迁移路径；没有 SLO、告警规则、值班手册；没有故障演练
-清单。
+**运维面，全部用可复现脚本验证过**：
 
-引擎是扎实的，运维面还没建。要承诺企业级 SLA，请把第二条当作路线图。
+| 能力 | 证据 | 脚本 |
+|---|---|---|
+| 多副本 | 2 副本共用 Redis；配额跨副本精确（limit=4，前 4 次通过，第 5 次在**任一**副本都被拒） | `scripts/verify_multi_replica.sh` |
+| 容量基线 | 单副本并发 1 时 145 RPS / p99 14ms；2 副本合计 192 RPS | `scripts/loadtest.py` |
+| 备份恢复 | sqlite 用官方 backup API，file 目录级，坏备份被拒 | `scripts/verify_backup_restore.sh` |
+| schema 迁移 | 版本化信封迁移，逐级应用，拒绝未知与未来版本 | `tests/test_store_migration.py` |
+| SLO 与告警 | 6 个 SLI，目标值取自实测基线；9 条规则经 promtool 校验 | `docs/design/SLO.md`、`deploy/prometheus/` |
+| 值班手册 | 每条告警：怎么确认、先做什么、**不要做什么** | `docs/design/RUNBOOK.md` |
+| 故障演练 | KV 挂、store 只读、上游不可达、客户端中断：全部按预期姿态失败 | `scripts/chaos_drill.sh` |
+
+**仍然没做的**：
+
+- **长稳压测**：现在是 12 秒短跑，不是跑一小时
+- **真实 LLM 的容量**：上游延迟主导，会改变所有数字
+- **多 worker**：`uvicorn --workers N` 绕开 GIL 未验证
+- **会话跨副本**：会话状态在每副本自己的 store 里
+
+引擎和运维面现在都建起来了。剩下的是长稳压测与真实上游测量，不是缺功能。
 
 ## 参与贡献
 

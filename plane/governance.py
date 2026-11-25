@@ -656,6 +656,14 @@ class QuotaGuard:
             self._prune(window, now_ts)
             limit = self._limit_of(kind)
 
+            # **`limit <= 0` = 关闭这一档**（与 `AGENT_RUNTIME_RATE_LIMIT=0` 同口径），
+            # 不是"一个都不许"。裸写 `len+n > limit` 时 0 会拦掉一切，
+            # 而它在配置里长得像"关闭" —— 这是本仓踩过的同一类坑（见 gateway._charge）。
+            if limit <= 0:
+                window.append(now_ts)
+                return GuardVerdict.ok(payload={"used": len(window), "limit": 0,
+                                                "remaining": -1, "unlimited": True})
+
             if n == 0:
                 return GuardVerdict.ok(payload={"used": len(window), "limit": limit,
                                                 "remaining": max(0, limit - len(window))})

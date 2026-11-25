@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Runtime — 生产形态的 LLM Agent 运行时</title>
-<meta name="description" content="一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。139 模块 / 7.6 万行 / 2187 用例全绿。">
+<meta name="description" content="一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。141 模块 / 7.6 万行 / 2202 用例全绿。">
 <meta property="og:title" content="Agent Runtime">
 <meta property="og:description" content="生产形态的 LLM Agent 运行时。运行时拥有形状，应用拥有内容。">
 <meta property="og:type" content="website">
@@ -160,9 +160,9 @@ footer a{color:var(--fg2)}
       <a class="btn" href="#start">快速开始</a>
     </div>
     <div class="stats">
-      <div class="stat"><div class="n">139</div><div class="l">模块</div></div>
+      <div class="stat"><div class="n">141</div><div class="l">模块</div></div>
       <div class="stat"><div class="n">76k</div><div class="l">行代码</div></div>
-      <div class="stat"><div class="n">2187</div><div class="l">测试用例</div></div>
+      <div class="stat"><div class="n">2202</div><div class="l">测试用例</div></div>
       <div class="stat"><div class="n">11</div><div class="l">端到端场景</div></div>
       <div class="stat"><div class="n">15</div><div class="l">冻结契约</div></div>
     </div>
@@ -296,7 +296,7 @@ footer a{color:var(--fg2)}
         <h3>已验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>单元 + 集成</td><td><span class="tag ok">2187 通过</span></td></tr>
+            <tr><td>单元 + 集成</td><td><span class="tag ok">2202 通过</span></td></tr>
             <tr><td>端到端场景</td><td><span class="tag ok">11 / 80 断言</span></td></tr>
             <tr><td>重复跑稳定性</td><td><span class="tag ok">连跑 5 次</span></td></tr>
             <tr><td>并发</td><td><span class="tag ok">100 线程零异常</span></td></tr>
@@ -305,6 +305,13 @@ footer a{color:var(--fg2)}
             <tr><td>真模型收敛</td><td><span class="tag ok">4-6 步到 DONE</span></td></tr>
             <tr><td>真实外部系统</td><td><span class="tag ok">Milvus · Langfuse · OTLP</span></td></tr>
             <tr><td>崩溃恢复</td><td><span class="tag ok">检查点 + 副作用落盘</span></td></tr>
+            <tr><td>多副本一致性</td><td><span class="tag ok">2 副本共享配额精确</span></td></tr>
+            <tr><td>容量基线</td><td><span class="tag ok">145 RPS / p99 14ms</span></td></tr>
+            <tr><td>备份恢复</td><td><span class="tag ok">sqlite + file 演练</span></td></tr>
+            <tr><td>schema 迁移</td><td><span class="tag ok">逐级迁移 + 拒绝未知</span></td></tr>
+            <tr><td>SLO / 告警</td><td><span class="tag ok">9 条规则 promtool 通过</span></td></tr>
+            <tr><td>值班手册</td><td><span class="tag ok">9 类告警处置</span></td></tr>
+            <tr><td>故障演练</td><td><span class="tag ok">6 项姿态验证</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -312,17 +319,14 @@ footer a{color:var(--fg2)}
         <h3>未验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>多副本部署</td><td><span class="tag no">从未跑过</span></td></tr>
-            <tr><td>压测基线</td><td><span class="tag no">无 p50/p99</span></td></tr>
-            <tr><td>备份恢复演练</td><td><span class="tag no">无</span></td></tr>
-            <tr><td>schema 迁移</td><td><span class="tag no">无</span></td></tr>
-            <tr><td>SLO / 告警规则</td><td><span class="tag no">无</span></td></tr>
-            <tr><td>值班手册</td><td><span class="tag part">有排障文档</span></td></tr>
-            <tr><td>故障演练清单</td><td><span class="tag no">无</span></td></tr>
+            <tr><td>长稳压测</td><td><span class="tag no">12 秒短跑，非长稳</span></td></tr>
+            <tr><td>真实 LLM 容量</td><td><span class="tag no">上游延迟主导</span></td></tr>
+            <tr><td>多 worker</td><td><span class="tag no">未验证</span></td></tr>
+            <tr><td>会话跨副本</td><td><span class="tag part">每副本独立 store</span></td></tr>
           </tbody>
         </table>
         <p style="margin-top:16px">
-          引擎是扎实的，运维面还没建。要承诺企业级 SLA，请把这张表当作路线图。
+          引擎与运维面都已建成。剩下的是长稳测试与真实上游测量，不是缺功能。
         </p>
       </div>
     </div>

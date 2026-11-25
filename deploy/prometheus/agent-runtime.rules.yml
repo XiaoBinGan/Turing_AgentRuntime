@@ -1,0 +1,118 @@
+# Agent Runtime 告警规则（Prometheus）。
+#
+# 阈值来自 docs/design/CAPACITY.md 的实测基线，不是拍脑袋：
+# 单副本 145 RPS / p99 512ms（并发 40），2 副本 192 RPS。
+#
+# 一条纪律：**每条告警都要能指向一个动作**。指不出动作的规则是噪音，
+# 噪音多了真事故就被淹掉。所以每条都有 `runbook` 标注对应的处置章节。
+groups:
+  - name: agent-runtime-slo
+    interval: 30s
+    rules:
+      # ── 可用性 ────────────────────────────────────────────
+      - alert: InstanceDown
+        expr: up{job="agent-runtime"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          runbook: RUNBOOK.md#1-实例不可用
+        annotations:
+          summary: "实例 {{ $labels.instance }} 已下线超过 1 分钟"
+          description: "单副本承载全部流量时会直接触发 SLO 违约。检查进程与 /healthz。"
+
+      - alert: ReadyzFailing
+        expr: probe_success{job="agent-runtime-readyz"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          runbook: RUNBOOK.md#2-readyz-失败依赖不健康
+        annotations:
+          summary: "{{ $labels.instance }} 的就绪探针连续失败"
+          description: "store 或 kv 不可用。注意：/v1/turns 可能仍返回 200（探针红、业务绿），见 DEPLOY.md 的已知陷阱。"
+
+      # ── 延迟（SLO：p95 < 500ms，p99 < 800ms）──────────────
+      - alert: TurnLatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(agent_runtime_turn_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          runbook: RUNBOOK.md#3-延迟升高
+        annotations:
+          summary: "回合 p95 超过 500ms"
+          description: "实测基线：并发 20 时 p95=228ms，并发 40 时 494ms。持续超 500ms 说明已过拐点。"
+
+      - alert: TurnLatencyP99Critical
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(agent_runtime_turn_duration_seconds_bucket[5m])) by (le)
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: critical
+          runbook: RUNBOOK.md#3-延迟升高
+        annotations:
+          summary: "回合 p99 超过 800ms（SLO 违约）"
+
+      # ── 错误率（SLO：< 0.1%）──────────────────────────────
+      - alert: TurnErrorRateHigh
+        expr: |
+          sum(rate(agent_runtime_turns_total{ok="false"}[5m])) by (tenant)
+            /
+          sum(rate(agent_runtime_turns_total[5m])) by (tenant)
+          > 0.001
+        for: 5m
+        labels:
+          severity: critical
+          runbook: RUNBOOK.md#4-错误率升高
+        annotations:
+          summary: "租户 {{ $labels.tenant }} 回合错误率超过 0.1%"
+
+      # ── 配额（成本闸）────────────────────────────────────
+      - alert: QuotaRejectionSpike
+        expr: |
+          sum(rate(agent_runtime_http_requests_total{status="429"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          runbook: RUNBOOK.md#5-大量-429
+        annotations:
+          summary: "429 持续出现，说明配额被持续打满"
+          description: "先确认是正常业务增长还是客户端重试风暴。不要直接调高阈值 —— 那是成本闸。"
+
+      - alert: RateLimitDistributedDisabled
+        expr: agent_runtime_info{rate_limit_distributed="false"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          runbook: RUNBOOK.md#6-多副本未开分布式限流
+        annotations:
+          summary: "多副本部署但分布式限流未开"
+          description: "实际阈值 = 配置值 × 副本数。这类失效不报错，只在账单上体现。"
+
+      # ── 资源与持久化 ──────────────────────────────────────
+      - alert: CheckpointErrors
+        expr: increase(agent_runtime_checkpoint_errors_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          runbook: RUNBOOK.md#7-落盘失败
+        annotations:
+          summary: "副作用落盘失败"
+          description: "崩溃后无法知道哪些写操作已生效。先查磁盘与 store 连通性。"
+
+      - alert: WorkflowStuck
+        expr: agent_runtime_workflow_running > 5
+        for: 15m
+        labels:
+          severity: warning
+          runbook: RUNBOOK.md#8-workflow-堆积
+        annotations:
+          summary: "running 状态的 workflow 超过 5 条且持续 15 分钟"
+          description: "可能是 worker 不足或某条 DAG 卡住。用 /v1/workflows 查明细。"
+
+      # ── 上游依赖 ─────────────────────────────────────────
+      # 注：LLM 调用没有独立指标，其失败表现为回合 `ok="false"`，
+      # 已被 TurnErrorRateHigh 覆盖。不重复告警。

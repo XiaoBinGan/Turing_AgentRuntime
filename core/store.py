@@ -67,6 +67,8 @@ from core.context import ContextHandle
 
 __all__ = [
     "STORE_SCHEMA_VERSION",
+    "register_migration",
+    "migrate_envelope",
     "DEFAULT_ROOT",
     "StoreError",
     "ContextNotFound",
@@ -84,6 +86,57 @@ __all__ = [
 
 #: Store 信封格式版本。与 core.context.SCHEMA_VERSION 是**两个独立**的版本号。
 STORE_SCHEMA_VERSION = 1
+
+#: 信封迁移表：`{旧版本: 函数}`，函数把**旧信封**就地升级成下一个版本。
+#:
+#: 为什么需要它：不认识的版本直接 `StoreSchemaMismatch` 是对的（fail-closed，
+#: 不猜），但那意味着**任何格式变更都让存量数据全部作废**。企业环境里
+#: 一次升级就丢掉所有会话与检查点，等于不能升级。
+#:
+#: 约定：迁移函数**只升一级**（`v -> v+1`），多级由 `migrate_envelope` 串起来。
+#: 这样每级责任清晰、可单独测试，加一级不用改已有逻辑。
+#:
+#: 加新版本时的步骤：
+#:   1. `STORE_SCHEMA_VERSION` +1
+#:   2. 在 `_MIGRATIONS` 里加 `{旧版本: 升级函数}`
+#:   3. 为"旧信封能读成新信封"补一条测试（见 tests/test_store_migration.py）
+_MIGRATIONS: dict[int, Any] = {}
+
+
+def register_migration(from_version: int, fn: Any) -> None:
+    """注册 `from_version -> from_version+1` 的信封升级函数。"""
+    _MIGRATIONS[int(from_version)] = fn
+
+
+def migrate_envelope(env: dict, where: str = "") -> dict:
+    """把信封逐级升到 `STORE_SCHEMA_VERSION`。缺迁移则不猜，抛 `StoreSchemaMismatch`。
+
+    为什么逐级而不是一步到位：一步写"v1→v3"的函数，等 v4 来了还得再写一次
+    "v1→v4"与"v3→v4"。逐级则可以只补新增那一级，老的继续用。
+    """
+    version = env.get("schema_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise StoreSchemaMismatch(
+            f"{where} 的 schema_version 不是整数：{version!r}")
+    if version > STORE_SCHEMA_VERSION:
+        # 比本进程新 —— 降级读是猜，必须拒绝
+        raise StoreSchemaMismatch(
+            f"{where} 的 schema_version={version} 比本进程支持的 "
+            f"{STORE_SCHEMA_VERSION} 更新（不能用旧代码读新数据）")
+    while version < STORE_SCHEMA_VERSION:
+        fn = _MIGRATIONS.get(version)
+        if fn is None:
+            raise StoreSchemaMismatch(
+                f"{where} 的 schema_version={version} 没有到 "
+                f"{version + 1} 的迁移函数（不猜旧格式）")
+        env = fn(dict(env))
+        nxt = env.get("schema_version")
+        if nxt != version + 1:
+            raise StoreSchemaMismatch(
+                f"{where} 的迁移函数没有把版本从 {version} 升到 "
+                f"{version + 1}（实际 {nxt!r}）—— 迁移写错了")
+        version = nxt
+    return env
 
 DEFAULT_ROOT = "/tmp/agent-runtime-store"
 
@@ -184,10 +237,9 @@ def _decode_envelope(raw: str, where: str) -> dict:
             f"{where} 的 schema_version 不是整数：{schema!r}"
         )
     if schema != STORE_SCHEMA_VERSION:
-        raise StoreSchemaMismatch(
-            f"{where} 的 schema_version 不认识：期望 {STORE_SCHEMA_VERSION}，"
-            f"收到 {schema}（不猜旧版本怎么读）"
-        )
+        # 走迁移表：能升就升，升不了才拒绝（不猜）
+        env = migrate_envelope(env, where)
+        schema = env.get("schema_version")
 
     ctx_id = env.get("ctx_id")
     if not isinstance(ctx_id, str) or not ctx_id:
@@ -282,6 +334,13 @@ class FileStore:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise StoreError(f"无法创建 store root {path}：{exc}") from exc
+        # **构造期就验可写**：只 mkdir 不验写，会让"目录存在但只读"这种情况
+        # 一路顺利启动，直到第一次 checkpoint 才失败 —— 而那时可能已经执行过
+        # 有副作用的工具了。磁盘/权限问题属于部署错误，要在启动时暴露。
+        if not os.access(path, os.W_OK):
+            raise StoreError(
+                f"store root 不可写：{path}"
+                f"（权限或只读挂载；这类错误必须在启动时发现）")
         self.root: Path = path
         #: save 调用计数（观测用）
         self.saves = 0

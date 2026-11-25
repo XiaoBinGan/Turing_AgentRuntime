@@ -236,6 +236,10 @@ flowchart TB
 | 会话并发无序号互斥 | 同会话并发请求 `turn_index` 会重 | 否 —— 历史不丢 |
 | MCP 只有 stdio | `streamable_http_client` 未验证 | 否 |
 | ~~HTTP 层无速率限制中间件~~ **已修** | 现在有 `RateLimitMiddleware`（`AGENT_RUNTIME_HTTP_RATE`，每 IP 每分钟，超限 429）。实测 limit=3 时第 4 次即拒 | 否 |
+| ~~租户配额不跨副本~~ **已修** | Gateway 加 `quota_counter`（Redis `INCR`）。实测 limit=4 时 2 副本共拒，不再 ×副本数 | 否 |
+| ~~KV 惰性连接掩盖配置错误~~ **已修** | `RATE_LIMIT_DISTRIBUTED=1` 时启动即探活；Redis 不可达则**拒绝启动** | 否 |
+| ~~FileStore 只 mkdir 不验可写~~ **已修** | 只读目录现在**构造期**就 `StoreError`，不会拖到首次 checkpoint | 否 |
+| ~~schema 不认识就作废~~ **已修** | 加迁移表：逐级升级，缺迁移才拒，比本进程新的版本仍拒 | 否 |
 | `tiktoken` 中文高估 1.9x | 非 OpenAI 模型走启发式 Tokenizer | 否 —— 已标定 |
 
 ## 七、规模
@@ -256,3 +260,30 @@ flowchart TB
 | 存储（store/kv/vector/fts/dist） | 8 | 307 |
 | 适配器（embeddings/mcp/tokenizer） | 4 | 137 |
 | 其他（架构/集成/并发） | — | 314 |
+
+---
+
+## 运维面验证状态
+
+七项曾标为"未验证"，现已全部用可复现脚本验证：
+
+| 能力 | 脚本 | 关键结论 |
+|---|---|---|
+| 多副本一致性 | `scripts/verify_multi_replica.sh` | 配额跨副本精确；修复了"每进程各算各的" |
+| 容量基线 | `scripts/loadtest.py` | 单副本 145 RPS 平台化（GIL）；2 副本 1.72× |
+| 备份恢复 | `scripts/verify_backup_restore.sh` | sqlite backup API + file；坏备份 fail-closed |
+| schema 迁移 | `tests/test_store_migration.py` | 逐级迁移；写错的迁移函数会被抓 |
+| SLO / 告警 | `docs/design/SLO.md`、`deploy/prometheus/` | 阈值来自实测；9 条规则 promtool 通过 |
+| 值班手册 | `docs/design/RUNBOOK.md` | 每条含"不要做什么" |
+| 故障演练 | `scripts/chaos_drill.sh` | 6 项姿态验证 |
+
+### 演练中发现并修掉的四个缺陷
+
+1. **租户配额不跨副本** —— `RATE_LIMIT_DISTRIBUTED` 只作用于 HTTP 层，
+   Gateway 的每租户配额一直是进程内存。5 副本 `limit=60` 实际放行 300。
+2. **KV 惰性连接掩盖配置错误** —— `RESPKV` 构造不碰网络，`shared` 恒为 True。
+   于是"配了分布式 + Redis 连不上"能启动成功，第一个请求才失败。
+3. **`FileStore` 只 mkdir 不验可写** —— 只读目录一路启动到首次 checkpoint 才失败，
+   而那时可能已执行过有副作用的工具。
+4. **`QuotaGuard` 没有"不限"语义** —— 与 `RATE_LIMIT=0` 口径不一致，
+   压测时被默认 60/60s 拦住却报 `quota exceeded`，容易误判成 Gateway 配额没配。
