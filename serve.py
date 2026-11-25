@@ -1754,7 +1754,7 @@ def _make_memory_provider(env: Mapping[str, str]) -> Any:
 
 
 def _make_store(env: Mapping[str, str]) -> Any:
-    """按 `AGENT_RUNTIME_STORE` 造 Context 存储（memory / sqlite / file）。"""
+    """按 `AGENT_RUNTIME_STORE` 造 Context 存储（memory / sqlite / file / redis）。"""
     kind = str(env.get("AGENT_RUNTIME_STORE") or "memory").strip().lower()
     try:
         if kind == "memory":
@@ -1773,7 +1773,31 @@ def _make_store(env: Mapping[str, str]) -> Any:
             from core.store import FileStore
             root = env.get("AGENT_RUNTIME_STORE_ROOT") or ""
             return FileStore(root) if root else FileStore()
-        return _Unavailable("store", f"未知 AGENT_RUNTIME_STORE={kind!r}（memory/sqlite/file）")
+        if kind == "redis":
+            # **会话/检查点跨副本的唯一路径**。
+            #
+            # 之前 `RedisStore` 已实现但这里没有分支，于是"想跨副本"只能选
+            # sqlite/file —— 而那两种是**单机文件**，多副本各写各的，
+            # 会话读不到对方写的轮次。实测过：A 写 B 读，`turn_index` 归零。
+            #
+            # 这里显式要求 KV 是 redis（而不是复用 `AGENT_RUNTIME_KV`）：
+            # 因为 Context 存储与限流计数是两个关注点，后者可能是 memory
+            # （单机够用），但前者跨副本必须共享。
+            from core.kv import RESPKV
+            from core.redis_store import RedisStore
+            kv = RESPKV(host=env.get("AGENT_RUNTIME_REDIS_HOST") or "127.0.0.1",
+                        port=int(env.get("AGENT_RUNTIME_REDIS_PORT") or 6379),
+                        db=int(env.get("AGENT_RUNTIME_REDIS_DB") or 0),
+                        password=env.get("AGENT_RUNTIME_REDIS_PASSWORD") or "",
+                        key_prefix=env.get("AGENT_RUNTIME_KEY_PREFIX") or "rt:")
+            if not kv.ping():
+                raise RuntimeError(
+                    "AGENT_RUNTIME_STORE=redis 但 Redis 连不上"
+                    "（跨副本存储必须是共享的，不能静默退回进程内）")
+            ttl = float(env.get("AGENT_RUNTIME_STORE_TTL_S") or 86400)
+            return RedisStore(kv, ttl_s=ttl, prefix="ctx:")
+        return _Unavailable(
+            "store", f"未知 AGENT_RUNTIME_STORE={kind!r}（memory/sqlite/file/redis）")
     except Exception as exc:            # noqa: BLE001 - 构造失败 = 不 ready，不是崩溃
         return _Unavailable("store", f"{type(exc).__name__}: {exc}")
 
@@ -4714,6 +4738,17 @@ def main() -> None:
                      metrics_requires_auth=parse_bool(
                          env.get("AGENT_RUNTIME_METRICS_AUTH"), default=True),
                      metrics_token=str(env.get("AGENT_RUNTIME_METRICS_TOKEN") or "").strip())
+    # 多 worker：uvicorn 的 `workers` 只在传**导入字符串**时生效，
+    # 传 app 对象会被忽略（uvicorn 会静默单进程跑，这点很容易误判）。
+    workers = int(env.get("AGENT_RUNTIME_WORKERS") or 0)
+    if workers > 1:
+        logger.info("server.multi_worker", workers=workers,
+                    note="进程内状态不共享；限额需 DISTRIBUTED=1 + 共享 KV")
+        uvicorn.run("serve:app_factory", host=host, port=port,
+                    log_level="info", access_log=False, lifespan="on",
+                    workers=workers)
+        return
+
     server = uvicorn.Server(uvicorn.Config(
         app, host=host, port=port, log_level="info",
         # access log 关掉：本服务自己用 JsonLogger 记结构化访问事件，
@@ -4727,6 +4762,28 @@ def main() -> None:
     except Exception:                     # noqa: BLE001
         pass
     server.run()
+
+
+def app_factory() -> Any:
+    """uvicorn 多 worker 用的**模块级工厂**。
+
+    为什么必须有它：`uvicorn --workers N` 只接受 `"module:factory"` 形式的
+    导入字符串，不接受已构造的 app 对象 —— 每个 worker 是独立进程，
+    必须各自 import 并构造。所以 `create_app()` 的关键字参数在这里取不到，
+    一切从环境变量读。
+
+    **多进程带来的语义变化**（必须知道，否则会误判）：
+
+      * 进程内状态**不再共享**：限流窗口、配额、`audit_log`、workflow 状态表
+        各进程一份 → 实际阈值 × worker 数
+      * 多 worker 想正确限额，必须 `AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1`
+        且 KV 是共享实现（Redis）
+      * `/metrics` 只有一个 worker 的数据（除非用 `prometheus_client`
+        的多进程模式，本仓未做）
+
+    所以多 worker 不是"免费加速"，它等价于多副本部署，只是少了一个反向代理。
+    """
+    return create_app()
 
 
 if __name__ == "__main__":                # pragma: no cover - 手动启动路径

@@ -27,7 +27,7 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **143 modules, 76k lines, 2215
+answer that survived contact with a test suite: **145 modules, 76k lines, 2215
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
@@ -206,15 +206,26 @@ Operational surface, all exercised with reproducible scripts:
 | On-call runbook | Per-alert: how to confirm, what to do first, what not to do | `docs/design/RUNBOOK.md` |
 | Chaos drill | KV down, store read-only, upstream down, client abort: all fail in the expected posture | `scripts/chaos_drill.sh` |
 
-Still not done:
+Also measured:
 
-- **Long-running soak**: the load test runs 12 seconds, not an hour
-- **Real-LLM capacity**: upstream latency dominates and would change every number
-- **Multi-worker**: `uvicorn --workers N` to get around the GIL is untested
-- **Cross-replica sessions**: session state lives in each replica's own store
+| Capability | Result | Script |
+|---|---|---|
+| Soak, 20 minutes (2 runs) | 121k and 137k requests, 100% success, p99 105-167ms, threads and file handles flat, steady-state RSS 85MB, peak 238MB, returns to 6MB after load stops | `scripts/soak_test.py` |
+| Real-LLM latency | deepseek-flash p50 2672ms, p99 3805ms; a 4-6 step turn is 11-16s end to end | `scripts/real_llm_capacity.py` |
+| Multi-worker | Requests do distribute across 4 workers, but throughput does not rise — the load generator saturates first | `AGENT_RUNTIME_WORKERS` |
+| Cross-replica sessions | Works via `AGENT_RUNTIME_STORE=redis`: turn_index stays continuous across replicas | `_make_store()` |
 
-The engine and the operational surface are both built now. What remains is
-soak testing and real-upstream measurement, not missing capability.
+What is still open:
+
+- **Load generator is too weak.** One client process caps out around 110-130 RPS,
+  which hides whatever the server can actually do. A firm multi-worker number
+  needs `wrk`/`k6` or a second machine. Stated as an open question rather than
+  a measured result.
+- **sqlite write contention** under concurrent load is not quantified.
+- **Soak ran 20 minutes**, not hours.
+
+Details, including a wrong conclusion I had to retract, are in
+`docs/design/CAPACITY.md`.
 
 ---
 
@@ -249,7 +260,7 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**143 个模块、7.6 万行、2215 个用例、11 个端到端场景**，
+测试套件的检验：**145 个模块、7.6 万行、2215 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
@@ -350,14 +361,24 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 | 值班手册 | 每条告警：怎么确认、先做什么、**不要做什么** | `docs/design/RUNBOOK.md` |
 | 故障演练 | KV 挂、store 只读、上游不可达、客户端中断：全部按预期姿态失败 | `scripts/chaos_drill.sh` |
 
-**仍然没做的**：
+**也已实测**：
 
-- **长稳压测**：现在是 12 秒短跑，不是跑一小时
-- **真实 LLM 的容量**：上游延迟主导，会改变所有数字
-- **多 worker**：`uvicorn --workers N` 绕开 GIL 未验证
-- **会话跨副本**：会话状态在每副本自己的 store 里
+| 能力 | 结果 | 脚本 |
+|---|---|---|
+| 长稳 20 分钟（两轮） | 12.1 万 / 13.7 万请求、100% 成功、p99 105-167ms、线程与句柄恒定、稳态 85MB、峰值 238MB、停止负载后回落到 6MB | `scripts/soak_test.py` |
+| 真实 LLM 延迟 | deepseek-flash p50 2672ms、p99 3805ms；4-6 步的回合端到端 11-16 秒 | `scripts/real_llm_capacity.py` |
+| 多 worker | 请求确实分散到 4 个 worker，但吞吐没提升——**压测端先饱和** | `AGENT_RUNTIME_WORKERS` |
+| 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
 
-引擎和运维面现在都建起来了。剩下的是长稳压测与真实上游测量，不是缺功能。
+**仍然开放的**：
+
+- **压测端太弱**：单客户端约 110-130 RPS 就饱和，掩盖了服务端真实能力。
+  确定的多 worker 结论需要 `wrk`/`k6` 或多机压测。这一项如实标为"未得出结论"，
+  不假装测过。
+- **sqlite 写入争用**未量化。
+- **长稳只跑了 20 分钟**，不是数小时。
+
+细节（含一个我不得不撤回的错误结论）见 `docs/design/CAPACITY.md`。
 
 ## 参与贡献
 
