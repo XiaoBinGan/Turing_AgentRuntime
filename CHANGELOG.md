@@ -78,7 +78,7 @@ hidden.
 
 ### Verified
 
-- 2167 unit and integration tests, stable across repeated full runs
+- 2187 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - 100-thread concurrency against one gateway; zero exceptions
 - Memory bounded: 900 turns grow 3KB with a capped audit log
@@ -110,6 +110,24 @@ Stated plainly because an enterprise decision depends on it:
 - Workflow nodes run as the submitter's turn, so INV-18 privilege reduction
   applies to sub-agents (C path) but not to DAG nodes (B path). Downgrading
   DAG nodes to read-only would make a deploy pipeline unable to deploy.
+
+### Fixed
+
+- `ToolManifest.idempotent` defaulted to `True`, which meant a `MUTATING`
+  tool constructed in code without an explicit flag would be cached: the same
+  arguments on retry returned the first result without executing. Declarative
+  config already derived the right value, so the two paths disagreed and the
+  code path was the dangerous one. Now `bool | None`, derived by
+  `cacheable()`; explicit `False` overrides everything.
+- `per_turn_limit` never fired for cached tools, because the cache check ran
+  first and returned before counting. A tool limited to 2 calls accepted 4.
+  Rate limiting now counts calls; budget still counts real executions.
+- `Dispatcher` replacement lost approval, timeout, budget accounting,
+  idempotency and T3 refusal silently. `capabilities()` plus
+  `Gateway.check_dispatch()` turns that into a startup failure.
+- `Loop._manifest()` failed when the dispatcher exposed `manifests()` as a
+  method rather than an attribute, so side-effect checkpointing treated every
+  tool as unknown and checkpointed read-only calls too.
 
 ### Tooling
 

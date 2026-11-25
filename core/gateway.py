@@ -304,6 +304,16 @@ def _latency_ms(since: float) -> float:
 # ══════════════════════════════════════════════════════════════
 # 四、Gateway
 # ══════════════════════════════════════════════════════════════
+class DispatcherCapabilityError(RuntimeError):
+    """Dispatcher 缺少必需保障。**启动期**抛出，不是运行期。"""
+
+    def __init__(self, message: str, *, detail: str = "",
+                 vertex: Mapping[str, Any] | None = None) -> None:
+        super().__init__(f"{message}；{detail}" if detail else message)
+        self.detail = detail
+        self.vertex = dict(vertex or {})
+
+
 class Gateway:
     """外部请求 → 运行时 的唯一入口。
 
@@ -349,6 +359,7 @@ class Gateway:
         audit_log_maxlen: int = 10_000,
         on_turn_start: Callable[..., Any] | None = None,
         on_turn_end: Callable[..., Any] | None = None,
+        required_dispatch: "frozenset[str] | None" = None,
     ) -> None:
         if not callable(loop_factory):
             raise TypeError("loop_factory 必须可调用：Callable[[str, TenantContext], Loop]")
@@ -362,6 +373,13 @@ class Gateway:
         self.trace_factory = trace_factory
         self.audit_sink = audit_sink
         self.allow_hosts = tuple(allow_hosts or ())
+        #: 期望 Dispatcher 提供的保障。`None` = 不校验（保持历史行为）。
+        #:
+        #: 设了就变成**启动期**的 fail-closed：`check_dispatch()` 时若实现的
+        #: `capabilities()` 少了任何一项，直接抛 `DispatcherCapabilityError`，
+        #: 而不是让审批/超时/预算在运行期静默消失。
+        self.required_dispatch = (frozenset(required_dispatch)
+                                  if required_dispatch is not None else None)
         self._clock = clock or time.monotonic
         self._clock_ms = clock_ms or now_ms
         self._context_factory = context_factory
@@ -847,6 +865,33 @@ class Gateway:
                           vertex={"guard_hits": list(getattr(verdict, "hits", ()) or ())})
 
     # ── ⑥ ExecCtx ─────────────────────────────────────────
+    def check_dispatch(self, dispatcher: Any) -> frozenset[str]:
+        """比对 Dispatcher 自述能力与期望，缺失即抛。返回它实际提供的能力。
+
+        **为什么必须在启动时做**：换掉 Dispatcher 不会报错，只会少保障。
+        实测：一个"只调 handler"的实现会让 T2 审批、T3 硬拒、幂等缓存、
+        预算记账、工具超时全部消失，而回合照常返回 `ok`。
+        这种失败在运行期没有任何信号 —— 直到某天真的需要审批时才发现没有。
+
+        `capabilities()` 缺失（老实现 / 第三方适配器）按**空集**处理：
+        不申报就是没有，宁可启动失败也不要静默降级。
+        """
+        getter = getattr(dispatcher, "capabilities", None)
+        provided = frozenset(getter()) if callable(getter) else frozenset()
+        wanted = self.required_dispatch
+        if wanted is None:
+            return provided
+        missing = wanted - provided
+        if missing:
+            raise DispatcherCapabilityError(
+                f"Dispatcher {type(dispatcher).__name__} 缺少保障：{sorted(missing)}",
+                detail=(f"期望 {sorted(wanted)}，实际 {sorted(provided)}。"
+                        f"缺的这些不会报错，只会在运行期静默失效 —— "
+                        f"要么换成完整实现，要么显式把 required_dispatch 设为 None "
+                        f"表示你接受这些保障缺席。"),
+                vertex={"missing": sorted(missing), "provided": sorted(provided)})
+        return provided
+
     def _make_exec_ctx(self, principal: Principal, shape: dict,
                        cancel_event: Any = None) -> ExecCtx:
         budget = Budget(**shape["budget"]) if shape["budget"] else Budget()

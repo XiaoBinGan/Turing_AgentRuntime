@@ -231,11 +231,11 @@ flowchart TB
 
 | 边界 | 影响 | 是否阻塞上线 |
 |---|---|---|
-| 鉴权默认关闭 | `authenticator=None` 时 principal 由请求体给 | **是** —— 必须配 `AGENT_RUNTIME_API_KEYS` |
+| ~~鉴权默认关闭~~ **已修** | 现在不配凭据 → `StartupRefused` 拒绝启动（fail-closed）。`create_app(authenticator=None)` 仍允许（那是给测试注入假件的缝），但 `main()` 挡住 | **否** —— 默认安全 |
 | Langfuse 只验证到 ingestion 层 | SDK 5.x ↔ v2 服务端协议不通 | 否 —— 部署选 v3 即可 |
 | 会话并发无序号互斥 | 同会话并发请求 `turn_index` 会重 | 否 —— 历史不丢 |
 | MCP 只有 stdio | `streamable_http_client` 未验证 | 否 |
-| HTTP 层无速率限制中间件 | 靠 Gateway 的租户配额 | 否 |
+| ~~HTTP 层无速率限制中间件~~ **已修** | 现在有 `RateLimitMiddleware`（`AGENT_RUNTIME_HTTP_RATE`，每 IP 每分钟，超限 429）。实测 limit=3 时第 4 次即拒 | 否 |
 | `tiktoken` 中文高估 1.9x | 非 OpenAI 模型走启发式 Tokenizer | 否 —— 已标定 |
 
 ## 七、规模

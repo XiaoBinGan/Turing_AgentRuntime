@@ -453,10 +453,18 @@ class Loop:
         found = self._tool_index.get(name)
         if found is not None:
             return found
-        for attr in ("manifests", "registry"):
+        for attr in ("registry", "manifests"):
             src = getattr(self._dispatcher, attr, None)
             if src is None:
                 continue
+            # `manifests` 在 Dispatcher 上是**方法**，不是属性。不先调用它，
+            # 后面的 `for m in src` 会去遍历方法对象 → TypeError → 判不出 manifest
+            # → 只读工具也被当成"副作用未知"而落盘。
+            if callable(src) and not isinstance(src, Mapping):
+                try:
+                    src = src()
+                except Exception:                              # noqa: BLE001
+                    continue
             try:
                 if isinstance(src, Mapping):
                     return src.get(name)

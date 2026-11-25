@@ -332,7 +332,17 @@ class ToolManifest:
     name: str
     side_effect: SideEffect
     risk_tier: RiskTier = RiskTier.T0_SAFE
-    idempotent: bool = True
+    #: 是否可幂等缓存。**`None` = 按 `side_effect` 推导**（见 `__post_init__`）。
+    #:
+    #: 为什么不做成 `bool = True`：那个默认值对只读工具安全，对写工具是事故 ——
+    #: `MUTATING` 工具同参数重试会命中缓存、**不会真的执行**，而调用方看到的是
+    #: `ok`。运维「点部署 → 超时 → 再点一次」拿到"成功"，其实什么都没做。
+    #:
+    #: 声明式配置（`tools.yaml`）本来就有这条推导
+    #: （`toolconfig.py`：`idempotent = side is READ_ONLY`），
+    #: 但在代码里直接构造 `ToolManifest` 时没有 —— 两条路径默认值相反，
+    #: 忘写一次就静默倒向危险的那边。这里统一成一条。
+    idempotent: bool | None = None
     timeout_ms: int = 5000
     max_result_bytes: int = 65536
     required_scope: str = "tool.read"
@@ -345,6 +355,29 @@ class ToolManifest:
     #: 支持的键：type / properties / required / additionalProperties /
     #: items / enum / minimum / maximum / minLength / maxLength。
     input_schema: dict | None = None
+
+    #: `idempotent` 的**三态**语义（由 Dispatcher 解释，见 `cacheable()`）：
+    #:
+    #:   * `None`  —— 未声明。只读工具按 True 处理；写工具按 False 处理，
+    #:                但此时 `ExecCtx.idempotency_key` **仍然生效**
+    #:                （业务显式声明"这一步只做一次"）。
+    #:   * `True`  —— 显式要缓存。
+    #:   * `False` —— 显式**不要**缓存，连 `idempotency_key` 也不管。
+    #:                「显式优于推导」：调用方说了不要，就不要。
+    #:
+    #: 为什么不在这里把 `None` 折叠成 bool：折叠会丢掉"这是推导值还是显式值"
+    #: 这个信息，而那正是上面第 1 与第 3 种情况的分界线。
+
+    def cacheable(self, *, has_business_key: bool) -> bool:
+        """要不要走结果缓存。**唯一的判定入口**（读写共用它，避免两边漂）。"""
+        if self.idempotent is False:          # 显式拒绝：压过一切
+            return False
+        if self.idempotent is True:           # 显式要求
+            return True
+        # 未声明：只读天然可缓存；写工具仅在业务给了幂等键时缓存
+        if self.side_effect is SideEffect.READ_ONLY:
+            return True
+        return has_business_key
 
 
 @dataclass(frozen=True)
@@ -453,8 +486,43 @@ class LLMProtocol(Protocol):
                  e: ExecCtx) -> LLMResponse: ...
 
 
+#: 工具分发器可以提供的保障项。名字就是语义，不做缩写。
+#:
+#: 为什么要有这份清单：`Dispatcher` 是可替换的（SPI），但**换掉它会静默丢掉
+#: 一整排保障**。实测：换成"只调 handler"的天真实现后，T2 审批、T3 硬拒、
+#: 幂等缓存、预算记账、工具超时全部消失，而系统看起来一切正常 ——
+#: 一个只有只读工具的部署，某人把 dispatcher 换成远程执行适配器，
+#: 审批就没了。
+#:
+#: 有了 `capabilities()`，装配层可以在**启动时**比对"我要什么"与"你给什么"，
+#: 缺失就拒绝启动。把运行期的静默降级变成启动期的响亮失败。
+DISPATCH_CAPABILITIES: frozenset[str] = frozenset({
+    "approval",       # 依 risk_tier 判定 needs_confirmation / denied
+    "scope",          # 校验 required_scope
+    "schema",         # 校验入参 JSON Schema
+    "policy",         # 可插拔静态策略
+    "idempotency",    # 幂等结果缓存
+    "rate_limit",     # per_turn_limit
+    "budget",         # 计入 ExecCtx.budget.tool_calls_used
+    "timeout",        # 按 manifest.timeout_ms 中断
+    "secrets",        # 按 manifest.secrets 注入且不进结果
+    "redaction",      # 结果里的凭据掩码
+    "observation",    # trace_log / denied_log 记账
+})
+
+
 class DispatcherProtocol(Protocol):
     def invoke(self, name: str, args: dict, e: ExecCtx) -> ToolOutcome: ...
+
+    def manifests(self) -> "Sequence[ToolManifest]": ...
+
+    def capabilities(self) -> frozenset[str]:
+        """本实现**真的**提供哪些保障（取自 `DISPATCH_CAPABILITIES`）。
+
+        诚实申报比申报齐全重要：装配层据此决定要不要启动，
+        而不是让缺失的保障在运行期静默消失。
+        """
+        ...
 
 
 class TracerProtocol(Protocol):

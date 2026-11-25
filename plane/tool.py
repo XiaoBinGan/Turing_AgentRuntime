@@ -464,6 +464,20 @@ class Dispatcher:
         self.trace_log: list[dict] = []       # 无 tracer 时的轻量审计
 
     # ── 对外入口 ────────────────────────────────────────────────
+    def capabilities(self) -> frozenset[str]:
+        """本 Dispatcher **真的**提供哪些保障。
+
+        这份申报必须与实际行为一致 —— `tests/test_dispatch_capabilities.py`
+        逐项实测：申报了某项，就要有对应的行为测试跟着；反之亦然。
+        """
+        from contracts import DISPATCH_CAPABILITIES
+        return frozenset(DISPATCH_CAPABILITIES)
+
+    def manifests(self) -> list[ToolManifest]:
+        """当前注册的全部工具清单（Gateway 用它构造 Prompt 的工具表）。"""
+        getter = getattr(self.registry, "manifests", None)
+        return list(getter()) if callable(getter) else []
+
     def invoke(self, name: str, args: dict, e: ExecCtx) -> ToolOutcome:
         t0 = now_ms()
         try:
@@ -551,27 +565,51 @@ class Dispatcher:
         # ⑥⑦⑧ 是**一个原子决策**：查缓存 → 限流 → 占预算 → 计数。
         # 并行下它们必须一起做，否则任何一处 check-then-act 都会被竞争打破。
         with self._lock:
-            # ⑥ 幂等缓存
-            cache_key = (name, digest, e.idempotency_key or f"turn:{e.turn_id}")
-            if manifest.idempotent and cache_key in self._cache:
-                return ToolOutcome.ok(replace(self._cache[cache_key], deduped=True))
-
-            # ⑦ 限流（按 turn 计）
+            # ⑥ 限流（按 turn 计）—— **在缓存之前**，这是刻意的。
+            #
+            # `per_turn_limit` 限的是**调用次数**，不是"真执行次数"。
+            # 理由：模型用同一组参数反复调同一个工具，是"原地打转"的典型信号，
+            # 该被这道闸拦住。如果先查缓存，命中就直接返回，计数永远不涨，
+            # `per_turn_limit` 形同虚设（实测：limit=2 的只读工具能连调 4 次）。
+            #
+            # 防"烧钱"是另一道闸（⑧ 预算）的职责：缓存命中不占预算。
+            # 两道闸各管一件事，不合并。
             turn_key = (e.turn_id, name)
             used = self._turn_calls.get(turn_key, 0)
             limit = int(manifest.per_turn_limit)
             if limit > 0 and used >= limit:
                 return ToolOutcome.denied(
                     f"rate limit: {name} called {used}x in turn {e.turn_id} "
-                    f"(per_turn_limit={limit})")
+                    f"(per_turn_limit={limit}；含幂等缓存命中)")
+            self._turn_calls[turn_key] = used + 1
 
-            # ⑧ 预算
+            # ⑦ 幂等缓存：命中就返回，**不占预算**（没有真执行）
+            #
+            # 两条**独立**的缓存理由，不能合并：
+            #   * `manifest.idempotent`：工具自身是只读的 → 同参数结果可复用。
+            #     这是 `ToolManifest` 按 side_effect 推导出来的默认值。
+            #   * `e.idempotency_key`：调用方**显式声明**"这一步只做一次"。
+            #     写工具靠它防重复部署 —— 业务幂等的唯一正确入口。
+            #
+            # 早先只用前者，于是写工具默认 `idempotent=False` 时
+            # 连显式给的 `idempotency_key` 一起失效了（实测被
+            # `test_same_args_twice_deduped_and_fn_runs_once` 抓住）。
+            # 语义应该反过来：写工具**默认不缓存**，但**显式要求**就缓存。
+            cache_key = (name, digest, e.idempotency_key or f"turn:{e.turn_id}")
+            # 判定交给 manifest 的三态实现：读写共用同一套逻辑，
+            # 否则会出现"写进去了但读不出来"（两边条件漂移）。
+            cacheable = manifest.cacheable(
+                has_business_key=bool(e.idempotency_key))
+            if cacheable and cache_key in self._cache:
+                return ToolOutcome.ok(replace(self._cache[cache_key], deduped=True))
+
+            # ⑧ 预算（只对**将要真执行**的调用记账）
             e.budget.tool_calls_used += 1
             over = e.budget.exhausted()
             if over:
                 e.budget.tool_calls_used -= 1      # 回滚：被预算拒的调用不计数
+                self._turn_calls[turn_key] = used  # 回滚：没执行也不算"调过"
                 return ToolOutcome.failed(f"budget exhausted: {over}")
-            self._turn_calls[turn_key] = used + 1
 
         # ⑨ Secret 注入
         call_args = args
@@ -618,7 +656,7 @@ class Dispatcher:
         if "error" in box:
             exc = box["error"]
             return ToolOutcome.failed(f"{type(exc).__name__}: {exc}",
-                                      retryable=bool(manifest.idempotent))
+                                      retryable=manifest.idempotent is not False)
 
         raw = box.get("value")
 
@@ -639,7 +677,7 @@ class Dispatcher:
             result = replace(result, redacted=result.redacted + hits)
         result = replace(result, duration_ms=round(now_ms() - t0, 3))
 
-        if manifest.idempotent:
+        if manifest.cacheable(has_business_key=bool(e.idempotency_key)):
             self._remember(cache_key, result)
         return ToolOutcome.ok(result)
 

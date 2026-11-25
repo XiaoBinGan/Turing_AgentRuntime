@@ -100,7 +100,7 @@ class SkillHandlerProtocol(Protocol):
 |---|---|---|
 | `LLMProtocol` | `adapters/openai_compat`（OpenAI 兼容协议）、`llm_mock` | 前缀可配 `AGENT_RUNTIME_LLM_PREFIX` |
 | `BuilderProtocol` | `builder.PromptBuilder` | token 预算在这里 |
-| `DispatcherProtocol` | `plane/tool.Dispatcher` | 权限/审批/归一化 |
+| `DispatcherProtocol` | `plane/tool.Dispatcher` | 权限/审批/归一化。**换实现必须申报 `capabilities()`**，否则启动即被拒（见下） |
 | `TracerProtocol` | `plane/quality.Tracer` | 可导出 OTel / Langfuse |
 | `ContextStore` | memory / file / sqlite / redis | 多副本必须 sqlite 或 redis |
 | `KV` | `InMemoryKV` / `RESPKV` | 多副本必须 `RESPKV` |
@@ -133,3 +133,53 @@ class SkillHandlerProtocol(Protocol):
 **你只需要实现 `Extractor` + `PlannerProtocol` + 你的工具/技能，
 Router 用默认的就够。** Runtime 的 1770 个用例不依赖任何业务内容——
 你实现了什么，它都不会因此变红。
+
+
+---
+
+## 六、Dispatcher 的保障自述（新增）
+
+`Dispatcher` 是可替换的，但**换掉它会静默丢掉一整排保障**。
+
+实测过一个"只调 handler"的天真实现：
+
+| 保障 | 真 Dispatcher | 天真实现 |
+|---|---|---|
+| T2 审批 | `needs_confirmation` | `ok` |
+| T3 硬拒 | `denied` | `ok` |
+| 幂等缓存 | handler 跑 1 次 | handler 跑 3 次 |
+| 预算记账 | `tool_calls_used=1` | `tool_calls_used=0` |
+| 工具超时 | `timeout / 0.06s` | `ok / 0.40s` |
+
+**运行期没有任何信号。** 一个只有只读工具的部署，某人把 dispatcher 换成
+远程执行适配器，审批就没了，而回合照常返回 `ok`。
+
+### 修法：启动期比对
+
+```python
+Gateway(..., required_dispatch=DISPATCH_CAPABILITIES)
+gw.check_dispatch(dispatcher)   # 缺失 → DispatcherCapabilityError（启动期）
+```
+
+```python
+class MyDispatcher:
+    def capabilities(self) -> frozenset[str]:
+        return frozenset({"scope", "schema", "timeout"})   # 诚实申报
+```
+
+**不申报 = 空集 = 全部缺失。** 宁可启动失败，也不要静默降级。
+
+`tests/test_dispatch_capabilities.py` 逐项实测：申报了某项，就有对应的行为测试。
+
+### 幂等三态
+
+`ToolManifest.idempotent` 是 `bool | None`，判定统一走 `manifest.cacheable()`：
+
+| 值 | 只读 | 写 | 有 `idempotency_key` |
+|---|---|---|---|
+| `None`（未声明） | 缓存 | **不缓存** | 写工具缓存（业务显式要求） |
+| `True` | 缓存 | 缓存 | 缓存 |
+| `False` | **不缓存** | 不缓存 | **不缓存**（显式压过一切） |
+
+`per_turn_limit` 限**调用次数**（含缓存命中，防模型原地打转）；
+`budget.tool_calls_used` 限**真执行**（缓存命中不占预算）。两道闸各管一件事。
