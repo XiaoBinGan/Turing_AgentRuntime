@@ -18,7 +18,8 @@ import re
 import sys
 from pathlib import Path
 
-SKIP_DIRS = {".venv", ".git", ".internal", "__pycache__", "node_modules", "site"}
+SKIP_DIRS = {".venv", ".git", ".internal", "__pycache__", "node_modules",
+             "site", "build", "dist"}
 SKIP_SUFFIX = {".pyc", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".zip", ".gz"}
 
 #: 明确允许的测试假值（团队约定：假密钥一律用这些）

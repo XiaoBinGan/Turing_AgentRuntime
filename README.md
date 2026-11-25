@@ -142,6 +142,14 @@ Deeper design documents live in [`docs/`](docs/):
 Zero third-party dependencies for the core:
 
 ```bash
+pip install agent-runtime                 # core only, no dependencies
+pip install "agent-runtime[all]"          # everything except service-backed backends
+pip install "agent-runtime[server]"       # just the HTTP surface
+```
+
+Or work from a clone, which also gives you the demo and the test suite:
+
+```bash
 git clone https://github.com/XiaoBinGan/agent-runtime.git
 cd agent-runtime
 python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
@@ -285,6 +293,14 @@ safe to adopt.
 ## 快速开始
 
 核心零第三方依赖：
+
+```bash
+pip install agent-runtime                 # 仅核心，零依赖
+pip install "agent-runtime[all]"          # 除需外部服务的后端之外的全量
+pip install "agent-runtime[server]"       # 只要 HTTP 面
+```
+
+或者 clone 下来（同时得到 demo 与测试套件）：
 
 ```bash
 git clone https://github.com/XiaoBinGan/agent-runtime.git

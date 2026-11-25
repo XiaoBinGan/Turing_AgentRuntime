@@ -20,9 +20,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _count_modules() -> int:
+    # 排除构建产物：`python -m build` 会在 build/lib/ 复制整棵树，
+    # 不排除的话模块数会翻倍（实测 138 -> 194），而这个脚本会误报。
+    skip = {".venv", "__pycache__", "build", "dist", ".git", "site"}
     return sum(1 for p in ROOT.rglob("*.py")
-               if ".venv" not in p.parts and "__pycache__" not in p.parts
-               and p.name != "__init__.py")
+               if not (set(p.parts) & skip) and p.name != "__init__.py")
 
 
 def _count_protocols() -> int:
@@ -97,6 +99,22 @@ def main() -> int:
             checks.append((f"断言数 {claimed} == 实际 {assertions}",
                            claimed == assertions,
                            f"README 写 {claimed}，实际 {assertions}"))
+
+    # 版本一致性：pyproject.toml 与 CHANGELOG 最新条目必须同号。
+    # 两者不同步时，`pip install` 拿到的版本与 changelog 讲的对不上，
+    # 用户会以为是发行事故。
+    try:
+        import tomllib
+        py_version = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        m = re.search(r"## \[([0-9]+\.[0-9]+\.[0-9]+)\]", changelog)
+        cl_version = m.group(1) if m else ""
+        checks.append((f"版本号 pyproject {py_version} == changelog {cl_version}",
+                       py_version == cl_version,
+                       f"pyproject={py_version} changelog={cl_version}，两者必须一致"))
+    except (FileNotFoundError, KeyError):
+        pass
 
     if "requirements-core.txt` is empty" in readme or "零第三方" in readme:
         checks.append(("核心依赖清单确为空", _core_requirements_empty(),

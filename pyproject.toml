@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-runtime"
+version = "0.1.0"
+description = "A production-shaped runtime for LLM agents. Runtime owns the shape, application owns the content."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "XiaoBinGan" }]
+keywords = [
+  "agent", "llm", "agent-runtime", "ai-agents", "orchestration",
+  "mcp", "rag", "llmops",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Typing :: Typed",
+]
+# 核心依赖为空，这是设计。
+# `core/` 只靠标准库，由 tests/test_architecture.py 在 AST 层面守着。
+dependencies = []
+
+[project.optional-dependencies]
+# HTTP 服务面
+server = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.5"]
+# 观测面：指标、追踪
+observability = ["prometheus_client>=0.19", "opentelemetry-sdk>=1.24"]
+# token 计量
+tokens = ["tiktoken>=0.6"]
+# Schema 校验
+schema = ["jsonschema>=4.20"]
+# 分布式 KV 与限流
+redis = ["redis>=5.0"]
+# 向量后端
+qdrant = ["qdrant-client>=1.7"]
+milvus = ["pymilvus>=2.4"]
+# 文档切分
+llama = ["llama-index-core>=0.10"]
+# 全量（不含需要额外服务的后端）
+all = [
+  "fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.5",
+  "prometheus_client>=0.19", "opentelemetry-sdk>=1.24",
+  "tiktoken>=0.6", "jsonschema>=4.20", "redis>=5.0",
+  "qdrant-client>=1.7", "llama-index-core>=0.10",
+]
+
+[project.urls]
+Homepage = "https://xiaobingan.github.io/agent-runtime/"
+Repository = "https://github.com/XiaoBinGan/agent-runtime"
+Documentation = "https://github.com/XiaoBinGan/agent-runtime/tree/main/docs"
+Changelog = "https://github.com/XiaoBinGan/agent-runtime/blob/main/CHANGELOG.md"
+Issues = "https://github.com/XiaoBinGan/agent-runtime/issues"
+
+[tool.setuptools]
+# 扁平布局：契约层与装配层在根，业务面在子包。
+# 显式列出而不是用自动发现 —— 自动发现会把 tests/ 与 demo/ 一起打进去。
+py-modules = ["contracts", "builder", "auth", "toolconfig"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "plane*", "adapters*", "agents*", "integrations*"]
+exclude = ["tests*", "demo*", "scripts*", "site*", "docs*"]
+
+[tool.setuptools.package-data]
+agents = ["*.yaml"]

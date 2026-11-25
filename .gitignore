@@ -36,3 +36,8 @@ agent_runtime*.db
 coverage.xml
 .coverage
 htmlcov/
+
+# 构建产物（python -m build）
+build/
+dist/
+*.egg-info/

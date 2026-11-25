@@ -89,6 +89,23 @@ can act on.
 If you can, include the smallest reproduction that fails. A failing test case is
 worth more than a paragraph.
 
+## Releases
+
+Version lives in `pyproject.toml`. A release is:
+
+```bash
+vim pyproject.toml          # bump version
+vim CHANGELOG.md            # add a section, with a Not-verified subsection
+./verify.sh                 # must be green
+python -m build             # sdist + wheel must build clean
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin main --tags
+gh release create vX.Y.Z --notes-from-tag dist/*
+```
+
+`0.x` releases may change contracts. Any change to `contracts.py` must appear
+under **Breaking** in the changelog with a migration note.
+
 ## Commit messages
 
 Imperative mood, one line under 72 characters, and a body that explains the
