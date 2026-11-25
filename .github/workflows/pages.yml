@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false    # 不取消：取消会让已上传的 artifact 失效
+  cancel-in-progress: false    # 取消会让已上传的 artifact 失效
 
 jobs:
   deploy:
@@ -24,8 +24,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify site directory is not empty
-        # `deploy-pages` 报 "Found 0 artifact(s)" 的根因通常就是这里空了，
-        # 而 upload 步骤仍然"成功"。先在源头说清楚，否则排查会绕很远。
+        # `deploy-pages` 报 "Found 0 artifact(s)" 时，第一怀疑对象是这里空了。
+        # 在源头说清楚，否则排查会绕很远。
         run: |
           count=$(find site -type f | wc -l)
           echo "site files: $count"
@@ -36,6 +36,30 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+
+      - name: Wait until the artifact is visible to the API
+        # **这一步是必要的，不是防御性编程**。
+        # 实测过：upload 步骤报成功、artifact 也确实建好了（446KB），
+        # 但紧接着的 deploy-pages 仍拿到 "Found 0 artifact(s)"。
+        # 上传完成与 artifacts 列表可见之间存在延迟，两者是两次独立请求。
+        # 轮询到可见再继续，比靠重试整个 job 便宜得多。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          for i in $(seq 1 30); do
+            n=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+                  --jq '[.artifacts[] | select(.name == "github-pages")] | length')
+            if [ "$n" -ge 1 ]; then
+              echo "artifact 已可见（第 ${i} 次查询）"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::60 秒内 artifact 始终不可见，上传可能真的失败了"
+          gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.total_count' || true
+          exit 1
 
       - id: deployment
         uses: actions/deploy-pages@v5
