@@ -9,13 +9,14 @@
 
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#e8f1fd","primaryTextColor":"#1f2933","lineColor":"#9aa2ad","fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif"}}}%%
 flowchart TB
-    classDef entry fill:#1e3a5f,stroke:#4a9eff,color:#fff
-    classDef main fill:#2d4a2d,stroke:#5cb85c,color:#fff
-    classDef plane fill:#4a3d1e,stroke:#d4a017,color:#fff
-    classDef guard fill:#5f1e1e,stroke:#ff6b6b,color:#fff
-    classDef store fill:#3d2d4a,stroke:#9b59b6,color:#fff
-    classDef ext fill:#333,stroke:#888,color:#ddd
+    classDef entry fill:#e8f1fd,stroke:#3b82f6,color:#0f2a4a
+    classDef main fill:#e9f7ea,stroke:#3fa14a,color:#12351a
+    classDef plane fill:#fdf6e3,stroke:#c99a16,color:#3d2f08
+    classDef guard fill:#fdeaea,stroke:#e05252,color:#4a1212
+    classDef store fill:#f4ecfa,stroke:#8b45b0,color:#331446
+    classDef ext fill:#f3f4f6,stroke:#9aa2ad,color:#2b3038
 
     CLIENT(["外部客户端<br/>curl / SDK / 浏览器"]):::ext
 
@@ -115,6 +116,7 @@ flowchart TB
 
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#e8f1fd","primaryTextColor":"#1f2933","lineColor":"#9aa2ad","fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif"}}}%%
 sequenceDiagram
     autonumber
     participant C as 客户端
@@ -159,10 +161,11 @@ sequenceDiagram
 
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#e8f1fd","primaryTextColor":"#1f2933","lineColor":"#9aa2ad","fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif"}}}%%
 flowchart LR
-    classDef closed fill:#5f1e1e,stroke:#ff6b6b,color:#fff
-    classDef open fill:#1e3d5f,stroke:#4a9eff,color:#fff
-    classDef store fill:#3d2d4a,stroke:#9b59b6,color:#fff
+    classDef closed fill:#fdeaea,stroke:#e05252,color:#4a1212
+    classDef open fill:#e8f1fd,stroke:#3b82f6,color:#0f2a4a
+    classDef store fill:#f4ecfa,stroke:#8b45b0,color:#331446
 
     subgraph FAILCLOSED["fail-closed —— 宁可拒绝"]
         direction TB
@@ -195,10 +198,11 @@ flowchart LR
 
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","primaryColor":"#e8f1fd","primaryTextColor":"#1f2933","lineColor":"#9aa2ad","fontFamily":"-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif"}}}%%
 flowchart TB
-    classDef done fill:#2d4a2d,stroke:#5cb85c,color:#fff
-    classDef opt fill:#4a3d1e,stroke:#d4a017,color:#fff
-    classDef real fill:#1e3a5f,stroke:#4a9eff,color:#fff
+    classDef done fill:#e9f7ea,stroke:#3fa14a,color:#12351a
+    classDef opt fill:#fdf6e3,stroke:#c99a16,color:#3d2f08
+    classDef real fill:#1e3a5f,stroke:#4a9eff,color:#1f2933
 
     V["./verify.sh"]:::done
 
