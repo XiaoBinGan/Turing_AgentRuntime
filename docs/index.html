@@ -298,7 +298,7 @@ footer a{color:var(--fg2)}
         <h3>已验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>单元 + 集成</td><td><span class="tag ok">2202 通过</span></td></tr>
+            <tr><td>单元 + 集成</td><td><span class="tag ok">2215 通过</span></td></tr>
             <tr><td>端到端场景</td><td><span class="tag ok">11 / 80 断言</span></td></tr>
             <tr><td>重复跑稳定性</td><td><span class="tag ok">连跑 5 次</span></td></tr>
             <tr><td>并发</td><td><span class="tag ok">100 线程零异常</span></td></tr>
@@ -314,6 +314,9 @@ footer a{color:var(--fg2)}
             <tr><td>SLO / 告警</td><td><span class="tag ok">9 条规则 promtool 通过</span></td></tr>
             <tr><td>值班手册</td><td><span class="tag ok">9 类告警处置</span></td></tr>
             <tr><td>故障演练</td><td><span class="tag ok">6 项姿态验证</span></td></tr>
+            <tr><td>长稳压测</td><td><span class="tag ok">20min ×2 / 13.7 万请求 / p99 105ms</span></td></tr>
+            <tr><td>真实 LLM 延迟</td><td><span class="tag ok">p50 2.7s / p99 3.8s</span></td></tr>
+            <tr><td>会话跨副本</td><td><span class="tag ok">STORE=redis，turn_index 连续</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -321,14 +324,13 @@ footer a{color:var(--fg2)}
         <h3>未验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>长稳压测</td><td><span class="tag no">12 秒短跑，非长稳</span></td></tr>
-            <tr><td>真实 LLM 容量</td><td><span class="tag no">上游延迟主导</span></td></tr>
-            <tr><td>多 worker</td><td><span class="tag no">未验证</span></td></tr>
-            <tr><td>会话跨副本</td><td><span class="tag part">每副本独立 store</span></td></tr>
+            <tr><td>多 worker 吞吐</td><td><span class="tag no">压测客户端先饱和，未测出</span></td></tr>
+            <tr><td>sqlite 写入争用</td><td><span class="tag no">未量化</span></td></tr>
+            <tr><td>长稳 &gt; 20 分钟</td><td><span class="tag part">数小时级未跑</span></td></tr>
           </tbody>
         </table>
         <p style="margin-top:16px">
-          引擎与运维面都已建成。剩下的是长稳测试与真实上游测量，不是缺功能。
+          引擎与运维面都已建成。剩下的是测量工具不足（压测端太弱），不是缺功能。
         </p>
       </div>
     </div>

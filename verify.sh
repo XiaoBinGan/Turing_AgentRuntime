@@ -22,7 +22,7 @@ FAIL=0
 line() { printf '%s\n' "────────────────────────────────────────────────────────────────"; }
 title() { line; printf '  %s\n' "$1"; line; }
 
-title "Agent Runtime 骨架验收"
+title "Turing Agent Runtime 验收"
 
 # ① 语法
 printf '① 语法编译 ... '

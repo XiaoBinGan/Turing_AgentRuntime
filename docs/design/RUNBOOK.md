@@ -237,6 +237,115 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $KEY" $BASE_U
 
 ---
 
+## 10. 多 worker 下限额被放大
+
+**没有自动告警**（`info{rate_limit_distributed}` 只能看出开关状态）。
+
+### 症状
+
+配了 `limit=60`，实际放行量远超 60；账单高于预期；`/metrics` 只有部分请求的数据。
+
+### 确认
+
+```bash
+# 1. 确认是不是多 worker
+curl -s http://HOST:PORT/v1/info | jq '.workers // "n/a"'
+ps -eo args | grep -c "[a]pp_factory"          # worker 进程数
+
+# 2. 确认分布式开关
+curl -s http://HOST:PORT/metrics | grep 'agent_runtime_info'
+```
+
+### 动作
+
+多 worker ≈ 多副本。必须同时满足：
+
+- `AGENT_RUNTIME_RATE_LIMIT_DISTRIBUTED=1`
+- `AGENT_RUNTIME_KV=redis` 且 Redis 可达（不可达会**拒绝启动**，这是故意的）
+
+### 不要做
+
+- **不要**在未开分布式的情况下用多 worker 跑生产。阈值 × N 的失效不报错，
+  只在账单上体现。
+- **不要**用多 worker 来提升吞吐。实测单副本 110-130 RPS 是 GIL 上限，
+  而压测客户端也差不多在这个量级 —— 加 worker 的收益**没有被测出来**
+  （见 CAPACITY.md）。要提吞吐先换压测工具确认服务端真实上限。
+
+---
+
+## 11. 内存"看起来在涨"
+
+### 症状
+
+监控上 RSS 从 85MB 涨到 238MB 又回落，反复锯齿。
+
+### 判断
+
+**先看谷值，不要看当前值。** 实测（20 分钟、13.7 万请求）：
+
+```
+原始 RSS: 186 → 70 → 79 → 89 → 182 → 85 → 88 → 102 → 223 → 93 → 238 → 83 → 101
+谷值序列（剔除预热）: 85.5 → 85.1 → 87.9 → 83.1
+稳态斜率: -0.10 MB/min
+```
+
+锯齿是 CPython 分配器行为（内存不立刻还给 OS）。**真泄漏的特征是谷值抬高**，
+不是峰值波动。
+
+### 决定性验证
+
+停掉负载，看 RSS 是否回落：
+
+```bash
+# 实测从 238MB 峰值回落到 6MB
+```
+
+**还回去了 = 没有泄漏。**
+
+### 不要做
+
+- **不要**看到峰值就重启。重启会丢掉 `audit_log` 与 workflow 状态。
+- **不要**用"全样本线性拟合"判断（我第一次就是这么误判的）。
+  锯齿数据做线性拟合，结论取决于末次采样在峰还是谷。
+
+---
+
+## 12. 会话跨副本读不到
+
+### 症状
+
+多副本部署下，用户在 A 副本聊了两轮，请求被负载均衡打到 B 副本时"失忆"。
+
+### 确认
+
+```bash
+curl -s http://HOST:PORT/v1/info | jq '.deps.store.kind'
+```
+
+如果是 `sqlite` 或 `file` → 这是**单机文件**，多副本各写各的。
+
+### 动作
+
+```
+AGENT_RUNTIME_STORE=redis
+AGENT_RUNTIME_REDIS_HOST=...
+AGENT_RUNTIME_REDIS_PORT=6379
+```
+
+### 判据
+
+同一 `session_id` 交替打两个副本，`turn_index` 应当连续：
+
+```
+副本 A 第1轮 → 1
+副本 B 第2轮 → 2      ← 读到 A 的历史
+副本 A 第3轮 → 3
+```
+
+修复前各自从 1 开始（已实测确认）。
+
+---
+
 ## 待补的观测能力
 
 以下三项目前**没有指标**，所以没有对应告警。补 metric 是让它们可运维的前提：

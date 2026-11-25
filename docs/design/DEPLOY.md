@@ -254,7 +254,11 @@ AGENT_RUNTIME_AUTH=off .venv/bin/python serve.py     # 显式裸奔，仅限本�
 
 | 变量 | 必填 | 默认 | 作用 | 配错的后果 |
 |---|---|---|---|---|
-| `AGENT_RUNTIME_STORE` | 否 | `memory` | `memory` \| `sqlite` \| `file` | 拼错（`sqlite3`/`SQLite`）→ **不报错**，`/readyz` 报 store 不可用（`未知 AGENT_RUNTIME_STORE=...`），而回合仍能跑（因为 Gateway 拿到的是 `_Unavailable`）→ 续跑全部失效 |
+| `AGENT_RUNTIME_STORE` | 否 | `memory` | `memory` \| `sqlite` \| `file` \| **`redis`** | 拼错（`sqlite3`/`SQLite`）→ **不报错**，`/readyz` 报 store 不可用（`未知 AGENT_RUNTIME_STORE=...`），而回合仍能跑（因为 Gateway 拿到的是 `_Unavailable`）→ 续跑全部失效。**多副本必须用 `redis`**：`sqlite`/`file` 是单机文件，A 写的会话 B 读不到（实测 `turn_index` 各自从 1 开始） |
+| `AGENT_RUNTIME_STORE_TTL_S` | 否 | `86400` | `AGENT_RUNTIME_STORE=redis` 时的 key TTL（秒） | 设太小 → 会话在用户还在聊的时候过期；设太大 → Redis 里的旧 Context 不清，内存持续涨 |
+| **`AGENT_RUNTIME_WORKERS`** | 否 | `0`（单进程） | uvicorn 多 worker 数 | **不是免费加速**：`uvicorn --workers N` 只接受导入字符串，传 app 对象会被**静默忽略**（已加 `app_factory()` 修掉）。更要紧的是语义：多 worker ≈ 多副本，限流/配额/`audit_log`/workflow 状态表**各进程一份**，必须同时开 `RATE_LIMIT_DISTRIBUTED=1` + 共享 Redis，否则阈值 × N |
+| **`AGENT_RUNTIME_TOKEN_PROFILE`** | 否 | `calibrated` | `calibrated` \| `conservative` | **默认用实测标定档（CJK 0.68 tok/字）**。设 `conservative` 退回 1.0 tok/字——纯中文会**高估 1.57×**，`budget=20000` 只能用 12760。换到未标定的模型时才该用 conservative |
+| **`AGENT_RUNTIME_GOVERNANCE_QUOTA`** | 否 | `60` | 治理面每 `kind` 每分钟配额 | 与 `AGENT_RUNTIME_RATE_LIMIT` 是**两道独立的闸**：那个管回合数，这个管 `runtime_turn`/`tool_call`/`llm_call` 各自计数。设 `0` = 关闭。压测时必须关，否则会被它的默认 60 拦住而报错只说 `quota exceeded` |
 | `AGENT_RUNTIME_STORE`（**副作用落盘也用它**） | — | `memory` | 非只读工具成功后落一份 checkpoint | **`memory` → 崩溃后无法知道"哪一步真做了"**。生产必须 `sqlite`/`file` |
 | `AGENT_RUNTIME_STORE`（workflow 也用它） | — | 同上 | workflow 状态与 Context 共用这个 store | **`memory` → 重启后发布流水线状态全丢**（含"跑到第几层、哪个节点被跳过"）。生产必须 `sqlite`/`file` |
 | `AGENT_RUNTIME_STORE_PATH` | `sqlite` 时建议 | `:memory:` | sqlite 文件路径 | **不配 = 内存库**：重启后 `ctx_id` 全部丢失（表现为"续跑/审计没了"）；目录不可写 → 构造失败 → `/readyz` 503 |

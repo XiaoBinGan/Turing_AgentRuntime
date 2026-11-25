@@ -10,6 +10,81 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.2.0] - 2026-11-26
+
+Closes the four gaps that 0.1.0 listed as unverified. Two of them were not gaps
+in measurement but real defects.
+
+### Added
+
+- **`AGENT_RUNTIME_STORE=redis`** — the only way to share sessions and
+  checkpoints across replicas. `RedisStore` had been implemented for a while but
+  was never wired into `_make_store()`, so multi-replica deployments could only
+  choose `sqlite` or `file`, both single-machine. Verified: `turn_index` stays
+  continuous across replicas and Redis holds the full history.
+- **`AGENT_RUNTIME_WORKERS`** plus a module-level `app_factory()`. uvicorn only
+  accepts an import string for workers and **silently ignores an app object**,
+  so the previous launch path could never have run multi-worker even if asked.
+- **`AGENT_RUNTIME_TOKEN_PROFILE`** (`calibrated` by default, `conservative`
+  available). See Fixed below for why the default matters.
+- **`AGENT_RUNTIME_GOVERNANCE_QUOTA`** to configure or disable the governance
+  quota, which was previously stuck at its default of 60/min with no override.
+- `scripts/soak_test.py` — sustained load with per-minute sampling of RSS,
+  threads and file handles. Criterion is the slope of the troughs, not of every
+  sample.
+- `scripts/real_llm_capacity.py` — upstream latency distribution against a real
+  endpoint.
+
+### Fixed
+
+- **Production used the conservative token profile.** `DEFAULT_PROFILE` charges
+  1.0 token per CJK character; the measured value is 0.68. `serve.py` used the
+  conservative one, so pure Chinese prompts stopped at ~64% of budget, wasting
+  36% and triggering compaction early. `CALIBRATED` existed and the docs
+  recommended it, but the production path never picked it up.
+- **Cache hits were billed at full price.** The adapter parsed
+  `prompt_cache_hit_tokens` but `cost_of()` accepted only input and output.
+  `Usage` now exposes `total` for the context window and `billable()` for cost;
+  `cache_hit_ratio` is a constructor argument because discounts vary by provider.
+- **Compaction cut blindly by index**, splitting an assistant turn from its tool
+  results. Measured on 2000 random realistic histories: 59.2% produced a tail
+  starting with an orphan tool entry. Cuts now step back to a unit boundary.
+- **Cross-replica sessions did not work**, as described above.
+- Three metrics added because alert rules needed them:
+  `agent_runtime_info{rate_limit_distributed}`, `checkpoint_errors_total`,
+  `workflow_running`. Four rules in the first draft queried metrics that did not
+  exist; three were backed by new metrics and one was deleted rather than
+  quietly left in place.
+
+### Measured
+
+| Item | Result |
+|---|---|
+| Soak, 20 minutes x2 | 121k and 137k requests, 100% success, p99 105-167ms, threads constant at 10, file handles flat, steady-state RSS 85MB with a 238MB peak, returning to 6MB after load stops |
+| Real-LLM latency | deepseek-flash p50 2672ms, p99 3805ms per call; a 4-6 step turn is 11-16 seconds |
+| Multi-worker | Requests spread across four workers, throughput does not rise; the load generator saturates near 110-130 RPS first |
+| Cross-replica sessions | Works with `STORE=redis` |
+
+### Not settled
+
+- **Multi-worker throughput** could not be measured: one client process caps out
+  around 110-130 RPS, hiding whatever the server can do. Needs `wrk`/`k6` or a
+  second machine. Recorded as an open question, not a result.
+- **sqlite write contention** under concurrent load is not quantified.
+- **Soak ran 20 minutes.** Slow leaks over hours would not show.
+
+### Changed behaviour
+
+- Production now uses the calibrated token profile. Anyone relying on the old
+  over-estimate should set `AGENT_RUNTIME_TOKEN_PROFILE=conservative`.
+- `Usage.total` is documented as the window view; billing must use
+  `billable()`. Code that priced tokens from `total` will now disagree with the
+  adapter's own cost figure.
+- The repository is now `XiaoBinGan/Turing_AgentRuntime`; the Pages URL moved to
+  `/Turing_AgentRuntime/` and the old one 404s.
+
+---
+
 ## [0.1.0] - 2026-11-25
 
 First public release. The engine is complete and heavily tested; the
@@ -201,4 +276,5 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.2.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.2.0
 [0.1.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.1.0
