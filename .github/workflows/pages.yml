@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false    # 不取消：取消会让已上传的 artifact 失效
 
 jobs:
   deploy:
@@ -22,9 +22,20 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify site directory is not empty
+        # `deploy-pages` 报 "Found 0 artifact(s)" 的根因通常就是这里空了，
+        # 而 upload 步骤仍然"成功"。先在源头说清楚，否则排查会绕很远。
+        run: |
+          count=$(find site -type f | wc -l)
+          echo "site files: $count"
+          test "$count" -gt 0 || { echo "::error::site/ 是空的，没有可部署内容"; exit 1; }
+
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
