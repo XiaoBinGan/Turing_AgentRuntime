@@ -10,6 +10,50 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.4.0] - 2026-11-26
+
+### Added
+
+- **Reasoning chain stripping** in `OpenAICompatAdapter`, on by default.
+  Reasoning models return thoughts and answer in the same `content` string, with
+  `message["reasoning"]` left null unless the server is configured with a
+  reasoning parser. Measured on vLLM with Qwen3.8-27B:
+
+  ```
+  content: 用户问"2+2等于几？只回答数字。" 需要只回答数字。答案是4。\n</think>\n\n4
+  ```
+
+  Left alone, that monologue becomes the turn text: the user reads the model
+  thinking out loud, and the next turn sees its own reasoning echoed in context.
+  With `strip_reasoning=True` the text is `4`.
+
+  The rule is deliberately conservative: if nothing follows the marker, the
+  original text is returned. When reasoning consumes the whole `max_tokens`
+  budget, content may hold only the pre-marker part, and stripping would turn
+  "did not finish" into "answered nothing", which is worse.
+
+### Measured
+
+- **Third upstream: vLLM with a 27B local model.** Qwen3.8-27B 4-bit on a single
+  4090. Steady state 4.5-4.8s per call, and a 2-step turn in 16.3s.
+- Getting it to serve `tool_calls` took two non-obvious flags. Without
+  `--enable-auto-tool-choice` the `tools` parameter returns a 400. With
+  `--tool-call-parser hermes` the endpoint returns 200, the model apparently
+  thinks, and `finish_reason` is `stop` with `tool_calls: null` — a silent
+  failure. This model needs `qwen3_xml`, matching its `<tool_call><function=`
+  template.
+
+### Not settled
+
+- Cache-aware billing still has no real upstream confirmation: Strata, vLLM with
+  embedding models, and this chat instance all report zero or omit
+  `prompt_cache_hit_tokens`.
+- Embedding and rerank services were stopped on the 4090 to make room for the 27B
+  model, and restored afterwards. Their startup commands are recorded in
+  CAPACITY.md.
+
+---
+
 ## [0.3.0] - 2026-11-26
 
 Two things this release fixes were found by people other than me, which is the
@@ -362,6 +406,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.4.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.0
 [0.3.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.3.0
 [0.2.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.2.0
 [0.1.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.1.0

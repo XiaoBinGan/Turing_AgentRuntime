@@ -209,6 +209,73 @@ adapter 收到 `get_metrics(service='api')`，Loop 执行后模型正确引用�
 都不报这个字段。所以 **`Usage.billable()` 的缓存折扣逻辑只被单元测试覆盖，
 没有真实上游数据验证**。这一条如实记在这里，不假装验过。
 
+## 第三组上游：vLLM 本地 27B（RTX 4090）
+
+`Qwen3.8-27B-W4A16-AWQ-GPTQ`（4bit 量化），vLLM 0.32，单张 4090（48GB）。
+
+### 启动参数决定能不能用
+
+这台机器上踩了五个坑，每个都让容器起不来：
+
+| 现象 | 根因 | 解法 |
+|---|---|---|
+| `can't start new thread` | 容器缺 `--privileged` | 原容器就是 `Privileged: true`，漏了 |
+| `CPU dispatcher tracer already initlized` | numpy 在受限 cgroup 下初始化失败 | 同上，加 `--privileged` 即可 |
+| `Free memory ... less than desired utilization` | `0.99 × 48GB` 超过物理可用 | 降到 **0.88**（模型权重 25.22 GiB，要留 KV 空间） |
+| `No available memory for the cache blocks` | util 太低，KV 空间为 0 | 同上，0.88 是这台的甜蜜点 |
+| `"auto" tool choice requires --enable-auto-tool-choice` | vLLM 默认不接受 `tools` 参数 | 加 `--enable-auto-tool-choice` |
+| `tool_calls` 恒为 None，`finish=stop` | parser 与模型的模板格式不匹配 | 该模型用 `<tool_call><function=` 格式 → **`--tool-call-parser qwen3_xml`**（不是 `hermes`） |
+
+**最值得记的是最后两条**：vLLM 显示 200 OK、能正常对话，但 `tools` 参数
+静默失效 —— 只有加对 parser 才真的产出 `tool_calls`。用 `hermes` 时模型
+输出了思考但没有结构化调用，`finish_reason` 是 `stop` 而不是 `tool_calls`。
+
+### 实测
+
+`strip_reasoning` 之后，单次调用 **4.5-4.8 秒**（稳态，in=321 / out=64）。
+完整回合（2 步）：
+
+```
+phase=DONE  term=DONE  steps=2  16.3 秒
+text: api 服务 p99 = **3120ms（约 3.12s）**，已超过 1 秒阈值，**确认劣化**。
+      其他指标：error_rate 2.1%，qps 1450。
+工具调用: [('get_metrics', 'ok')]
+```
+
+### 推理模型的思维链必须剥
+
+这颗模型是推理模型，`content` 长这样：
+
+```
+用户问"2+2等于几？只回答数字。" 需要只回答数字。答案是4。
+</think>
+
+4
+```
+
+而 `message["reasoning"]` 是 **None** —— 服务端没配 `--reasoning-parser` 时
+vLLM 不会单独给这个字段。不处理的话：
+
+| 后果 | 说明 |
+|---|---|
+| 把独白当答案 | 用户读到"用户问……需要只回答数字"，不是答案 |
+| 污染 history | 下一轮模型看到自己的思维链当前文，判断会漂 |
+| 回合文本失去检索价值 | 存进 Memory 的是内心独白 |
+
+`OpenAICompatAdapter` 现在有 `strip_reasoning=True`（默认开）：剥离
+`</think>` / `</thinking>` / `[/THINK]` 等标记之前的内容。
+
+**保守规则**：标记之后为空时**保留原文** —— 推理吃光 max_tokens 时
+`content` 可能只剩标记前的内容，剥掉会得到空字符串，把"模型没答完"
+变成"模型答了空"，那是更糟的失败。
+
+实测同一请求：
+
+```
+strip_reasoning=True : '4'
+strip_reasoning=False: '用户问"2+2 等于几？只回答数字。" 需要只回答数字。答案是4。\n</think>\n\n4'
+```
+
 ## 多 worker（`AGENT_RUNTIME_WORKERS`）
 
 `scripts/bench_multiworker.sh`，wrk 4.2.0，每档 20 秒 × 2 轮取均值。

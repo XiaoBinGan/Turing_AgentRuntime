@@ -193,6 +193,7 @@ class OpenAICompatAdapter:
         #: 缓存命中相对全价的折扣系数。DeepSeek / Anthropic 约 0.1，
         #: 各家不同，所以是参数不是常数。取 1.0 等于"缓存不打折"。
         cache_hit_ratio: float = 0.1,
+        strip_reasoning: bool = True,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         base = (base_url or "").strip()
@@ -221,6 +222,11 @@ class OpenAICompatAdapter:
         self.price_in_per_m = float(price_in_per_m)
         self.price_out_per_m = float(price_out_per_m)
         self.cache_hit_ratio = float(cache_hit_ratio)
+        #: 是否剥离推理模型的思维链（`...` 之前的部分）。
+        #: 默认开。**只剥标记之后有实际内容的情况** —— 如果 `</think>`
+        #: 后面是空的（max_tokens 被推理吃光），保留原文，因为那时
+        #: 原文是唯一线索，剥掉就什么都没了。
+        self.strip_reasoning = bool(strip_reasoning)
         self.sleeper = sleeper
         #: 传输接缝：默认 urllib.request.urlopen。测试用它注入确定性失败
         #: （本机可能挂着系统代理，真实 socket 层的失败形态不可移植）。
@@ -457,7 +463,18 @@ class OpenAICompatAdapter:
         first = choices[0] if isinstance(choices[0], dict) else {}
         message = first.get("message") if isinstance(first.get("message"), dict) else {}
 
-        text = self._content_text(message.get("content"))
+        raw_text = self._content_text(message.get("content"))
+        # **推理模型的思维链要剥掉**。
+        #
+        # 实测 Qwen3.5（vllm + qwen3_xml）：content 是
+        #   "We need answer ... \n</think>\n\n4"
+        # 真正的答案在 `</think>` **之后**；而 message["reasoning"] 是 None
+        # （服务端没配 --reasoning-parser 时不会单独给字段）。
+        #
+        # 不剥的后果不是"多显示几行"：思维链会被当成最终答案写进 history，
+        # 下一轮模型看到自己的内心独白当前文，判断会漂；而且回合文本里
+        # 用户读到的是"我们需要回答用户……"这种独白。
+        text = self._strip_reasoning(raw_text) if self.strip_reasoning else raw_text
         calls, warnings = self._parse_tool_calls(message.get("tool_calls"))
         self.last_warnings = warnings
         if warnings:
@@ -479,6 +496,30 @@ class OpenAICompatAdapter:
         except Exception:                               # noqa: BLE001
             pass
         return resp
+
+    #: 常见的思维链结束标记。顺序有意义：先长后短，避免短标记误命中。
+    _REASONING_MARKERS: tuple[str, ...] = (
+        "</think>", "</think>", "</thinking>", "[/THINK]", "\n[/INST]",
+    )
+
+    @classmethod
+    def _strip_reasoning(cls, text: str) -> str:
+        """去掉思维链，只留答案。
+
+        保守原则：**只有标记之后还有非空内容时才剥**。否则返回原文 ——
+        推理吃光 max_tokens 时 `content` 可能只剩标记本身或标记前的内容，
+        那时候剥掉就成了空字符串，比不剥更糟（会把"模型没答"变成"模型答了空"）。
+        """
+        if not text:
+            return text
+        for marker in cls._REASONING_MARKERS:
+            idx = text.find(marker)
+            if idx == -1:
+                continue
+            tail = text[idx + len(marker):].strip()
+            if tail:
+                return tail
+        return text
 
     @staticmethod
     def _content_text(content: Any) -> str:
