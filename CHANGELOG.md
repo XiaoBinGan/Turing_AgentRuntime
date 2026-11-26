@@ -66,10 +66,30 @@ point of publishing.
   is fine for a single replica; the argument for Redis is fault domain and
   operability, not throughput.
 
+### Measured across machines
+
+Putting the load generator on a separate 64-core host over a 28ms Tailscale link
+produced a result worth more than the missing 8-worker ceiling:
+
+| Config | Same host | Across machines |
+|---|---|---|
+| 1 worker | 2,247 | 2,151 |
+| 8 worker | 6,911-8,068 | **3,260** |
+
+One worker agrees, eight workers differ by 2.5x. At one worker the server is the
+bottleneck; at eight the network is. Server CPU stayed at 271% of an available
+800% while the cross-machine run reported 3,260 RPS, so the server was idle and
+the requests were queued on the wire. Raising concurrency from 1,024 to 4,096
+did not help — only latency grew.
+
+The deployment lesson is in CAPACITY.md: the same server capability delivers very
+different throughput depending on how far away the clients are, so capacity
+planning has to start from client location, not from the server's ceiling.
+
 ### Not settled
 
-- The 8-worker curve needs a second machine; the box has 10 cores and the load
-  generator shares them, so 3.59x is a floor.
+- The 8-worker ceiling on one host is not isolated: the box has 10 cores and the
+  load generator competes for them.
 - All RPS figures use the built-in scripted model (pure CPU). With a real
   upstream each turn becomes network wait, so concurrency capacity differs,
   though the one-worker-one-core constraint does not.

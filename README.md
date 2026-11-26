@@ -231,8 +231,11 @@ Also measured:
 
 What is still open:
 
-- **8-worker curve needs a second machine.** The box has 10 cores and the load
-  generator shares them, so 3.59x is a floor, not a ceiling.
+- **Network RTT caps throughput, and that is now measured.** From the same host,
+  8 workers reach 6,911-8,068 RPS. From another machine over a 28ms link, the
+  same setup tops out at 3,260 RPS with server CPU at only 271% — the requests
+  are in flight, not being processed. Capacity planning has to start from where
+  the clients are.
 - **sqlite write contention** under concurrent load is not quantified.
 - **Soak ran 20 minutes**, not hours.
 
@@ -395,7 +398,9 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 
 **仍然开放的**：
 
-- **8 worker 的曲线需要第二台机器**：整机 10 核且压测端同机，3.59× 是下限不是上限。
+- **网络 RTT 会封顶吞吐，这一条已实测**：同机 8 worker 到 6,911-8,068 RPS；
+  换一台机器经 28ms 链路打过来，同样配置只有 3,260 RPS，且服务端 CPU 仅 271%
+  —— 请求在路上，不在处理。容量规划要先问"客户端在哪"。
 - **sqlite 写入争用**未量化。
 - **长稳只跑了 20 分钟**，不是数小时。
 
