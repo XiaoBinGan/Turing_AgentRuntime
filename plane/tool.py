@@ -78,6 +78,13 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, tuple[ToolManifest, ToolFn]] = {}
+        #: **热加载的锁**。`replace_all` 会整体换掉 `_tools`，而并行的
+        #: `Loop(parallel_tools=True)` 可能正在 `get()` / `manifests()`。
+        #: 用 RLock：`replace_all` 内部要调 `register`（可重入）。
+        #:
+        #: 不加锁的后果是读到一个**半换完**的表：一部分新工具、一部分旧工具，
+        #: 而这一瞬间模型可能正好看到一个已删除工具的描述。
+        self._lock = threading.RLock()
 
     def register(self, manifest: ToolManifest, fn: ToolFn) -> None:
         if not isinstance(manifest, ToolManifest):
@@ -86,10 +93,49 @@ class ToolRegistry:
             raise ValueError("manifest.name 不能为空")
         if not callable(fn):
             raise TypeError(f"tool {manifest.name} 的实现不可调用")
-        if manifest.name in self._tools:
-            # 同名注册 = 静默覆盖 = 权限被换掉都不知情，直接拒绝
-            raise ValueError(f"tool 已注册: {manifest.name}")
-        self._tools[manifest.name] = (manifest, fn)
+        with self._lock:
+            if manifest.name in self._tools:
+                # 同名注册 = 静默覆盖 = 权限被换掉都不知情，直接拒绝
+                raise ValueError(f"tool 已注册: {manifest.name}")
+            self._tools[manifest.name] = (manifest, fn)
+
+    def replace_all(self, items: Iterable[tuple[ToolManifest, ToolFn]]) -> dict[str, Any]:
+        """**原地**整体替换工具表（热加载入口）。
+
+        为什么是「原地」而不是「新建一个 ToolRegistry」：`Dispatcher` 在构造时
+        持有了 registry 的引用，`_loop_factory` 又闭包捕获了那个 dispatcher。
+        新建对象后替换 `app.state` 只影响之后创建的 Loop，**正在跑的 Loop
+        仍然用旧表** —— 那种"热加载看起来成功了"更难查。
+
+        先校验全部条目再替换：中途抛错会留下半张表。
+
+        返回 `{"added": [...], "removed": [...], "changed": [...]}` 供端点回报 diff
+        （运维需要知道"我改的那一项到底生效了没"）。
+        """
+        incoming: dict[str, tuple[ToolManifest, ToolFn]] = {}
+        for manifest, fn in items:
+            if not isinstance(manifest, ToolManifest):
+                raise TypeError("manifest 必须是 ToolManifest")
+            if not manifest.name:
+                raise ValueError("manifest.name 不能为空")
+            if not callable(fn):
+                raise TypeError(f"tool {manifest.name} 的实现不可调用")
+            if manifest.name in incoming:
+                raise ValueError(f"工具名重复: {manifest.name}")
+            incoming[manifest.name] = (manifest, fn)
+
+        with self._lock:
+            old = dict(self._tools)
+            added = sorted(set(incoming) - set(old))
+            removed = sorted(set(old) - set(incoming))
+            changed = sorted(
+                name for name in set(old) & set(incoming)
+                if old[name][0] != incoming[name][0]
+            )
+            # 单次赋值 = 原子换表：读者要么看到旧表要么看到新表，看不到中间态。
+            self._tools = incoming
+        return {"added": added, "removed": removed, "changed": changed,
+                "total": len(incoming)}
 
     def get(self, name: str) -> tuple[ToolManifest, ToolFn] | None:
         return self._tools.get(name)

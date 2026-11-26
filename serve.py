@@ -190,6 +190,7 @@ import math
 import os
 import platform
 import re
+import secrets
 import signal
 import sys
 import threading
@@ -272,7 +273,7 @@ __all__ = [
 ]
 
 #: 运行时自述里的版本号。不读 git、不 import 打包元数据：一个探针不该为此碰文件系统。
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 #: 服务名（进日志的 `service` 字段与 /v1/info）
 SERVICE_NAME = "agent-runtime"
@@ -3359,6 +3360,7 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
                exempt_paths: Sequence[str] | None = DEFAULT_EXEMPT_PATHS,
                metrics_requires_auth: bool = True,
                metrics_token: str = "",
+               admin_token: str = "",
                max_body_bytes: int | None = None,
                rate_limit_per_minute: int | None = None,
                request_timeout_s: float | None = None,
@@ -3540,6 +3542,11 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
     app.state.version = VERSION
     app.state.signals = []
     app.state.signal_driver = None
+    # 工具表从 gateway 取（装配在 `build_gateway_from_env` 那层）。
+    # 注入的假 gateway 没有这些属性 → 保持 None，端点优雅降级成空表。
+    app.state.tools = getattr(gateway, "_tool_registry", None)
+    app.state.tool_dispatcher = getattr(gateway, "_tool_dispatcher", None)
+    app.state.tool_loader_env = getattr(gateway, "_tool_loader_env", {}) or {}
 
     # ── Workflow 显式入口（B）的执行器 ──
     # **总是装配**（默认开启）：`/v1/workflows` 是确定性流程的正式入口，
@@ -3600,6 +3607,10 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
     app.state.authenticator = None
     app.state.auth_middleware = None
     app.state.auth_config = {}
+    #: 热加载端点的独立门槛。**空串 = 端点不注册**（不是"不校验"）。
+    #: 为什么不复用主鉴权：改运行时能力是管理动作，不该只凭一个普通用户的
+    #: `runtime:run` scope 就放行。
+    app.state.admin_token = str(admin_token or "").strip()
     if authenticator is not None:
         install_auth(
             app, authenticator,
@@ -3713,6 +3724,138 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
         response = _result_response(result)
         _observe_http(metrics, "/v1/turns", response.status_code)
         return response
+
+    # ── ①c 资源清单（只读）──────────────────────────────────
+    @app.get("/v1/tools", tags=["ops"],
+             summary="本实例已注册的工具（只读，不含 secrets）")
+    async def list_tools() -> Response:
+        """运行时**实际注册**的工具清单。
+
+        和读 YAML 的区别：配置加载会校验、会拒绝、会告警 —— 文件里有一项
+        不代表运行时真注册上了。这个端点给的是注册后的事实。
+
+        为什么需要：此前没有任何 HTTP 途径能回答"这个实例能干什么"。
+        运维翻 YAML、客户端猜工具名，而 `needs_approval` 这种信息
+        （哪些工具会挂起等审批）直接决定了前端要不要准备审批 UI。
+
+        **不暴露 `secrets`**：见 `_tool_public_view` 的白名单说明。
+        """
+        registry = getattr(app.state, "tools", None)
+        names = getattr(registry, "names", None)
+        if registry is None or not callable(names):
+            # 没装配工具表是**合法状态**（serve 默认不配 tools.yaml）。
+            # 200 + 空表，而不是 404：能力存在，只是这一项为空。
+            return JSONResponse(content={"tools": [], "count": 0,
+                                         "note": "本实例未装配工具表"}, status_code=200)
+        views = [_tool_public_view(m) for m in registry.manifests()]
+        views.sort(key=lambda v: (v["risk_level"], v["name"]))
+        return JSONResponse(content={
+            "tools": views,
+            "count": len(views),
+            "needs_approval": sum(1 for v in views if v["needs_approval"]),
+        }, status_code=200)
+
+    # ── ①d 工具热加载（管理动作，独立门槛）──────────────────
+    if app.state.admin_token:
+        @app.post("/v1/admin/tools/reload", tags=["admin"],
+                  summary="重新读取工具配置并原子替换工具表（需 admin token）")
+        async def reload_tools(request: Request) -> Response:
+            """重读 `AGENT_RUNTIME_TOOLS` 指向的配置并**原地**替换工具表。
+
+            为什么需要它：改一项工具参数就要重启服务，而重启会中断正在跑的
+            回合（除非先 drain 到手）。运维调白名单不该有这个代价。
+
+            为什么是**原地替换**：`_loop_factory` 闭包捕获了 dispatcher，
+            dispatcher 持有 registry 引用。新建 registry 再替换 app.state
+            只影响之后创建的 Loop，**正在跑的 Loop 仍然用旧表** ——
+            那种"热加载看起来成功了"更难查。
+
+            门槛：`Authorization: Bearer <AGENT_RUNTIME_ADMIN_TOKEN>`。
+            没配这个环境变量时**端点根本不注册**（404），不暴露存在性。
+
+            失败语义（fail-closed）：**任何一步出错都不替换**。
+            新配置坏掉时保留旧表，服务继续用上一份能工作的工具集 ——
+            换上一张坏表会让"改配置"变成"停服"。
+            """
+            token = ""
+            header = request.headers.get("authorization") or ""
+            if header.lower().startswith("bearer "):
+                token = header[7:].strip()
+            token = token or (request.headers.get("x-admin-token") or "").strip()
+            # 定长比较，避免按字节提前返回泄露前缀
+            if not token or not secrets.compare_digest(token, app.state.admin_token):
+                _observe_http(metrics, "/v1/admin/tools/reload", 403)
+                return JSONResponse(
+                    content={"error": "forbidden", "status": 403,
+                             "detail": "需要 admin token"},
+                    status_code=403)
+
+            registry = getattr(app.state, "tools", None)
+            if registry is None or not hasattr(registry, "replace_all"):
+                _observe_http(metrics, "/v1/admin/tools/reload", 503)
+                return JSONResponse(
+                    content={"error": "unavailable", "status": 503,
+                             "detail": "工具表未装配，无法热加载"},
+                    status_code=503)
+
+            loader_env = getattr(app.state, "tool_loader_env", {}) or {}
+            try:
+                from toolconfig import load_tools_from_env
+                loaded = load_tools_from_env(loader_env)
+
+                # 先装进**临时** registry：中途任何一项不合法都在这里炸，
+                # 真正那张表一动不动。
+                staging = type(registry)()
+                loaded.register_into(staging)
+                items = [(m, staging.get(m.name)[1]) for m in staging.manifests()]
+            except Exception as exc:                           # noqa: BLE001
+                # 旧表保留 —— 这是 fail-closed 的关键动作
+                _observe_http(metrics, "/v1/admin/tools/reload", 422)
+                try:
+                    logger.warn("tools.reload_failed",
+                                reason=f"{type(exc).__name__}: {exc}")
+                except Exception:                              # noqa: BLE001
+                    pass
+                return JSONResponse(
+                    content={"error": "reload_failed", "status": 422,
+                             "detail": f"{type(exc).__name__}: {exc}",
+                             "note": "旧工具表保持不动"},
+                    status_code=422)
+
+            diff = registry.replace_all(items)
+            try:
+                logger.info("tools.reloaded", **{k: v for k, v in diff.items()
+                                                 if k != "total"},
+                            total=diff.get("total", 0))
+            except Exception:                                  # noqa: BLE001
+                pass
+            _observe_http(metrics, "/v1/admin/tools/reload", 200)
+            return JSONResponse(content={"ok": True, "diff": diff}, status_code=200)
+
+    @app.get("/v1/capabilities", tags=["ops"],
+             summary="各资源面与派发器申报的能力（只读）")
+    async def list_capabilities() -> Response:
+        """SPI 实现申报的能力，供客户端做能力探测。
+
+        `dispatch` 来自 `Dispatcher.capabilities()` —— 那份申报与
+        `tests/test_dispatch_capabilities.py` 的行为测试一一对应，
+        所以它是**可验证的声明**，不是自说自话。
+        """
+        dispatcher = getattr(app.state, "tool_dispatcher", None)
+        dispatch: list[str] = []
+        if dispatcher is not None:
+            caps = getattr(dispatcher, "capabilities", None)
+            if callable(caps):
+                try:
+                    dispatch = sorted(str(c) for c in caps())
+                except Exception:                              # noqa: BLE001
+                    dispatch = []
+        registry = getattr(app.state, "tools", None)
+        tools_count = len(registry) if hasattr(registry, "__len__") else 0
+        return JSONResponse(content={
+            "dispatch": dispatch,
+            "counts": {"tools": tools_count},
+        }, status_code=200)
 
     # ── ①b 续跑挂起的回合（审批）──────────────────────────────
     @app.post("/v1/turns/{ctx_id}/resume", tags=["turns"],
@@ -4219,6 +4362,21 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
     # 为什么需要它：API key 的默认 user_id 是不可逆别名（`svc_xxxxxxxx`），
     # 客户端要在请求体里声明身份（一致性校验）时得先知道自己是谁。这里给的只是
     # **调用方自己的**身份，不是别人的，所以不构成信息泄露。
+    if authenticator is None:
+        # **未启用鉴权时的显式 404**。
+        # 状态码仍是 404（能力不存在，不是能力坏了），但 body 说清"为什么"和
+        # "怎么开"。裸 `{"detail":"Not Found"}` 会让客户端以为是路径写错，
+        # 去翻文档、改 URL —— 而它需要的是改一个环境变量。
+        @app.get("/v1/whoami", tags=["ops"], include_in_schema=False)
+        async def whoami_disabled() -> Response:
+            return JSONResponse(content={
+                "error": "whoami_requires_auth",
+                "status": 404,
+                "detail": "本实例未启用鉴权，/v1/whoami 不存在。"
+                          "未启用鉴权时身份由请求体给出，没有『我是谁』这个服务端事实。",
+                "enable": "AGENT_RUNTIME_AUTH=1（并配 API key 或 JWT）",
+            }, status_code=404)
+
     if authenticator is not None:
         @app.get("/v1/whoami", tags=["ops"], summary="凭据对应的身份（需鉴权）")
         async def whoami(request: Request,
@@ -4278,6 +4436,39 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
             status_code=500)
 
     return app
+
+
+def _tool_public_view(m: Any) -> dict[str, Any]:
+    """`ToolManifest` → 可安全暴露的只读视图。
+
+    **白名单，不是黑名单**：只挑明确安全的字段出来。`ToolManifest` 上有
+    `secrets`（要注入的环境变量名），那是部署内部信息，出网就是泄露面。
+    用黑名单（"除了 secrets 都放"）迟早会漏掉将来新增的敏感字段。
+    """
+    tier = getattr(m, "risk_tier", None)
+    try:
+        tier_name = tier.name if hasattr(tier, "name") else str(tier)
+        tier_value = int(tier) if tier is not None else 0
+    except (TypeError, ValueError):
+        tier_name, tier_value = "UNKNOWN", -1
+    side = getattr(m, "side_effect", None)
+    side_name = side.value if hasattr(side, "value") else str(side)
+    return {
+        "name": getattr(m, "name", ""),
+        "description": getattr(m, "description", ""),
+        "side_effect": side_name,
+        "risk_tier": tier_name,
+        "risk_level": tier_value,
+        # 需不需要人工确认：T2+ 且没带 approval 就会被拦成 needs_confirmation。
+        # 客户端据此决定"要不要准备审批 UI"，所以直接给结论而不是让前端自己算。
+        "needs_approval": tier_value >= 2,
+        "idempotent": getattr(m, "idempotent", None),
+        "required_scope": getattr(m, "required_scope", ""),
+        "per_turn_limit": getattr(m, "per_turn_limit", 0),
+        "timeout_ms": getattr(m, "timeout_ms", 0),
+        "max_result_bytes": getattr(m, "max_result_bytes", 0),
+        "input_schema": getattr(m, "input_schema", None),
+    }
 
 
 def _result_response(result: Any) -> Response:
@@ -4668,6 +4859,17 @@ def build_gateway_from_env(*, logger: Any = None,
     except Exception:                                      # noqa: BLE001
         if logger is not None:
             logger.warn("tools.detach", reason="无法挂载 loaded_tools，子进程可能残留")
+    # 工具表与派发器挂到 gateway 上，供 `create_app` 取出来放进 `app.state`
+    # （`/v1/tools` 只读查询、`/v1/admin/tools/reload` 原地热替换）。
+    # 走 gateway 而不是直接写 app，是因为 registry/dispatcher 在这层装配，
+    # 而 app 在上一层 —— 这里没有 app 可写。
+    try:
+        gateway._tool_registry = registry               # noqa: SLF001
+        gateway._tool_dispatcher = dispatcher           # noqa: SLF001
+        gateway._tool_loader_env = dict(e) if hasattr(e, "keys") else {}
+    except Exception:                                      # noqa: BLE001
+        if logger is not None:
+            logger.warn("tools.attach", reason="无法挂载工具表，/v1/tools 将为空")
     return gateway
 
 
@@ -4869,7 +5071,8 @@ def main() -> None:
                      exempt_paths=exempt_paths,
                      metrics_requires_auth=parse_bool(
                          env.get("AGENT_RUNTIME_METRICS_AUTH"), default=True),
-                     metrics_token=str(env.get("AGENT_RUNTIME_METRICS_TOKEN") or "").strip())
+                     metrics_token=str(env.get("AGENT_RUNTIME_METRICS_TOKEN") or "").strip(),
+                     admin_token=str(env.get("AGENT_RUNTIME_ADMIN_TOKEN") or "").strip())
     # 多 worker：uvicorn 的 `workers` 只在传**导入字符串**时生效，
     # 传 app 对象会被忽略（uvicorn 会静默单进程跑，这点很容易误判）。
     workers = int(env.get("AGENT_RUNTIME_WORKERS") or 0)

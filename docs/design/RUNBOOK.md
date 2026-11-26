@@ -504,6 +504,51 @@ curl -s -X POST $HOST/v1/turns/$CTX_ID/resume \
 
 ---
 
+## 16. 工具热加载失败
+
+### 症状
+
+`POST /v1/admin/tools/reload` 返回 **422** `reload_failed`。
+
+**注意这是好事**：旧工具表保持不动，服务继续用上一份能工作的工具集。
+需要的是修配置，不是回滚部署。
+
+### 确认
+
+```bash
+# 1. 端点是否存在（不配 admin token 时根本不注册）
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $HOST/v1/admin/tools/reload
+#    404 = 没配 AGENT_RUNTIME_ADMIN_TOKEN；403 = token 不对
+
+# 2. 看服务端日志的 reason（带文件名+行号）
+journalctl -u agent-runtime | grep tools.reload_failed
+```
+
+### 常见原因
+
+| 日志里的字样 | 含义 |
+|---|---|
+| `缺少 version 字段` | YAML 根节点必须有 `version: 1`，本模块拒绝猜字段语义 |
+| `YAML 语法错误（第 N 行第 M 列）` | 缩进/引号问题 |
+| `import` 指向的模块导入失败 | 模块不在 `PYTHONPATH`，或函数名写错 |
+| `工具名重复` | 同一个名字注册了两次 |
+
+### 动作
+
+改配置文件 → 再调一次端点。空 diff（`added/removed/changed` 全空）表示
+"文件变了但注册结果没变"，通常是你改的字段不影响注册（比如只改了
+`description` 之外的元数据，或者改到了被忽略的位置）。
+
+### 不要做
+
+- **不要**因为 422 就重启服务。422 意味着旧表还在正常工作。
+- **不要**在热加载返回 200 后就认为"新工具已可用"却忽略 diff。
+  看 `added` / `changed` 里有没有你改的那一项 —— 没有就是没生效。
+- **不要**指望热加载能改 `AGENT_RUNTIME_TOOLS` 的**路径**。路径是启动期
+  读取的，改它需要重启；端点只重读该路径下的内容。
+
+---
+
 ## 待补的观测能力
 
 以下三项目前**没有指标**，所以没有对应告警。补 metric 是让它们可运维的前提：

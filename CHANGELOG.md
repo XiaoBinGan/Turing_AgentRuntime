@@ -10,6 +10,82 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.6.0] - 2026-11-27
+
+Three gaps that were not defects but were not capabilities either. Each is the
+answer to a question the HTTP surface could not previously answer.
+
+### Added
+
+- **`GET /v1/tools`** — what this instance actually registered.
+
+  Until now there was no HTTP way to find out. Operators read the YAML, but the
+  file and the running state are not the same thing: loading validates, rejects,
+  and warns, so a tool in the file may not be registered. This reports the
+  post-registration fact.
+
+  `needs_approval` is computed from the risk tier (T2+), so a client preparing
+  approval UI does not have to reimplement the tier rules.
+
+  **`secrets` is never returned.** That field holds environment variable names to
+  inject at call time, which is deployment-internal. Serialisation is a
+  whitelist, not "everything except secrets" — a blacklist would eventually miss
+  a field added later.
+
+- **`GET /v1/capabilities`** — what the dispatcher claims it provides
+  (`idempotency`, `approval`, `rate_limit`, …). These claims are backed by
+  `tests/test_dispatch_capabilities.py`, so they are verifiable rather than
+  self-asserted.
+
+- **`POST /v1/admin/tools/reload`** — re-read the tool config and swap the table
+  in place.
+
+  Previously, changing one tool parameter required a restart, which interrupts
+  in-flight turns. Not a defect, but a real cost for anyone tuning a whitelist.
+
+  Three things about the implementation matter:
+
+  | Property | Why |
+  |---|---|
+  | **In-place replacement** | `_loop_factory` closes over the dispatcher, which holds a registry reference. Building a new registry and swapping `app.state` only affects loops created afterwards — running loops keep the old table, which is a hard failure to notice |
+  | **Fail-closed** | Any error leaves the old table untouched. Swapping in a broken table turns "edit config" into "stop service" |
+  | **Independent gate** | `AGENT_RUNTIME_ADMIN_TOKEN`, not the main auth. Changing runtime capability is an administrative action and should not ride on an ordinary user's `runtime:run` scope. Without the token the endpoint is not registered at all, so its existence is not disclosed |
+
+  The reload re-reads the path recorded at startup. Changing the *path* still
+  needs a restart, because that is a configuration change rather than a content
+  change.
+
+### Fixed
+
+- **`/v1/whoami` returned a bare 404 when auth was disabled.** The status code
+  was right — the capability does not exist — but `{"detail":"Not Found"}` sends
+  the client looking for a typo in the URL when what it needs is an environment
+  variable. It now returns a 404 with `whoami_requires_auth`, an explanation, and
+  the switch to flip.
+
+### Not changed
+
+Things I looked at and left alone, with reasons:
+
+- **`toolconfig.py` staying startup-only** is correct for everything except the
+  reload case now covered above.
+- **Resource planes having no HTTP endpoints** is right: `plane/` is
+  implementation, `serve.py` is exposure. The two read-only queries that
+  genuinely belong on the surface are the two added here.
+- **`/v1/whoami` returning 404 rather than 500 or a default identity** is
+  deliberate and stays.
+
+### Tests
+
+2272 total, up from 2258. The 14 new ones cover the whitelist (no `secrets`
+leak), the approval flag derivation, token rejection, add/remove diff accuracy,
+and the fail-closed case where a broken config must leave the old table working.
+
+No existing endpoint was removed or changed in shape; the four new routes are
+additive.
+
+---
+
 ## [0.5.0] - 2026-11-27
 
 ### Fixed
@@ -503,6 +579,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.6.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.6.0
 [0.5.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.5.0
 [0.4.1]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.1
 [0.4.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.0

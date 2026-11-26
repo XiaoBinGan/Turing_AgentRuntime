@@ -244,6 +244,39 @@ AGENT_RUNTIME_AUTH=off .venv/bin/python serve.py     # 显式裸奔，仅限本�
 | `OPENAI_TEMPERATURE` | 否 | adapter 默认 | 采样温度 | 非数字 → 被静默忽略（不报错），你以为设了 |
 | `OPENAI_PRICE_IN_PER_M` / `OPENAI_PRICE_OUT_PER_M` | 否 | 0 | 成本核算单价（每百万 token，入/出分开） | 不配 → `budget.cost_total_usd` 恒为 0，**成本预算永不触发**，超支无告警；配成「每千 token」的价 → 成本放大 1000 倍，预算瞬间打满 |
 
+### 运维端点（只读）
+
+```
+GET /v1/tools          已注册的工具：名字、风险档、needs_approval、required_scope
+GET /v1/capabilities   派发器申报的保障（idempotency / approval / rate_limit …）
+```
+
+`/v1/tools` 给的是**运行时实际注册**的事实，不是 YAML 的内容 ——
+配置加载会校验、会拒绝、会告警，文件里有一项不代表真注册上了。
+
+**不返回 `secrets`**：那是要注入的环境变量名，属于部署内部信息。
+
+`needs_approval` 由风险档直接算出（T2+ 为真）。客户端据此决定要不要准备审批 UI，
+不用自己重复实现一遍档位判断。
+
+### 工具热加载
+
+```bash
+AGENT_RUNTIME_ADMIN_TOKEN=<随机串>          # 不配则端点不注册（404）
+
+curl -X POST $HOST/v1/admin/tools/reload \
+  -H "Authorization: Bearer $AGENT_RUNTIME_ADMIN_TOKEN"
+```
+
+返回 diff：`{"added": [...], "removed": [...], "changed": [...], "total": N}`。
+
+| 语义 | 说明 |
+|---|---|
+| **原地替换** | `_loop_factory` 闭包捕获了 dispatcher，dispatcher 持有 registry 引用。新建 registry 再替换 `app.state` 只影响之后创建的 Loop，**正在跑的 Loop 仍用旧表** |
+| **fail-closed** | 任何一步出错都**不替换**。新配置坏掉时保留旧表 —— 换上一张坏表会把"改配置"变成"停服" |
+| **只重载内容** | 按启动时记录的 `AGENT_RUNTIME_TOOLS` 路径重读。**路径变了要重启**：那是配置变更，不是内容变更 |
+| **独立门槛** | 不复用主鉴权：改运行时能力是管理动作，不该只凭普通用户的 `runtime:run` 放行 |
+
 ### 审批端点
 
 T2+ 风险工具会挂起等审批。批准/拒绝走专用端点：
