@@ -267,9 +267,11 @@ curl -s http://HOST:PORT/metrics | grep 'agent_runtime_info'
 
 - **不要**在未开分布式的情况下用多 worker 跑生产。阈值 × N 的失效不报错，
   只在账单上体现。
-- **不要**用多 worker 来提升吞吐。实测单副本 110-130 RPS 是 GIL 上限，
-  而压测客户端也差不多在这个量级 —— 加 worker 的收益**没有被测出来**
-  （见 CAPACITY.md）。要提吞吐先换压测工具确认服务端真实上限。
+- **可以用多 worker 提吞吐，而且确实有效**：实测 4 worker = 2.97×（2,247 → 6,681 RPS）。
+  **但必须先确认限流与配额是分布式的**，否则限额会放大 N 倍。
+- **不要相信单进程 Python 压测器给出的 RPS。** 旧的 `scripts/loadtest.py`
+  自身天花板约 110 RPS，只有单 worker 服务端的 1/20 —— 用它比较 worker 数
+  会得出"多 worker 无效"的错误结论（我自己就得出过一次）。压测请用 `wrk`。
 
 ---
 

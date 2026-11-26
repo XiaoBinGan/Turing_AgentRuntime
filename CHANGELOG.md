@@ -10,6 +10,72 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.3.0] - 2026-11-26
+
+Two things this release fixes were found by people other than me, which is the
+point of publishing.
+
+### Fixed
+
+- **`pip install agent-runtime` installed someone else's package.** The name on
+  PyPI belongs to an unrelated AutoGen placeholder (v0.0.1) that pulls in four
+  `autogen-*` distributions and cannot be imported. The README told readers to
+  run exactly that command as step one. The distribution name is now
+  `turing-agent-runtime`, and the README says plainly that it is not on PyPI yet
+  and gives the git-based install.
+- **`risk_tier=0` was accepted silently and then removed the tool.** Python does
+  not enforce the enum, so a bare int got through construction, and
+  `builder._render_tools` threw `AttributeError` on `.name`. `Loop._build_prompt`
+  caught that and turned it into a warning, so the turn completed normally with
+  every tool missing from the prompt. `ToolManifest.__post_init__` now coerces
+  both `risk_tier` and `side_effect`, and rejects invalid values at the line
+  where the tool is defined.
+
+### Corrected
+
+- **Every throughput number in 0.2.0 was wrong by 15x.** The load generator was
+  a single-process `httpx.AsyncClient` capped at roughly 110 RPS — one twentieth
+  of what a single worker can do — so it measured itself, not the server.
+  Re-measured with wrk:
+
+  | Config | 0.2.0 (wrong) | Actual |
+  |---|---|---|
+  | 1 worker | 145 RPS | **2,247 RPS** |
+  | 4 worker | 131 RPS, "no improvement" | **6,681 RPS (2.97x)** |
+  | 8 worker | untested | **8,068 RPS (3.59x)** |
+
+  The conclusion inverts: multi-worker was always worth it. The bottleneck is the
+  GIL, one worker per core, not a lock in this codebase — proven by server CPU
+  tracking core count exactly (109% / 407% / 700%) and throughput being flat
+  across concurrency levels at one worker.
+- `docs/design/CAPACITY.md` opens with a correction notice rather than quietly
+  editing the old numbers, because anyone who read 0.2.0 made decisions on them.
+- `RUNBOOK.md` previously advised against using multi-worker for throughput.
+  That advice was based on the bad measurement and is now reversed, with a
+  warning not to trust single-process Python load generators.
+
+### Added
+
+- `examples/quickstart/` — three runnable examples (minimal turn, real endpoint,
+  approval flow) and `docs/design/QUICKSTART.md` with a concept table and a list
+  of ten onboarding obstacles found by walking the repo as a newcomer.
+- `scripts/bench_multiworker.sh` — the wrk harness that produced the corrected
+  numbers.
+- `scripts/bench_sqlite.py` — write contention under threads and processes.
+  Multi-process writes to one file scale to 3.07x with zero failures, so sqlite
+  is fine for a single replica; the argument for Redis is fault domain and
+  operability, not throughput.
+
+### Not settled
+
+- The 8-worker curve needs a second machine; the box has 10 cores and the load
+  generator shares them, so 3.59x is a floor.
+- All RPS figures use the built-in scripted model (pure CPU). With a real
+  upstream each turn becomes network wait, so concurrency capacity differs,
+  though the one-worker-one-core constraint does not.
+
+---
+
 ## [0.2.0] - 2026-11-26
 
 Closes the four gaps that 0.1.0 listed as unverified. Two of them were not gaps
@@ -276,5 +342,6 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.3.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.3.0
 [0.2.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.2.0
 [0.1.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.1.0

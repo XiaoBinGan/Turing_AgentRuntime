@@ -27,7 +27,7 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **145 modules, 76k lines, 2215
+answer that survived contact with a test suite: **150 modules, 76k lines, 2223
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
@@ -127,6 +127,7 @@ Deeper design documents live in [`docs/`](docs/):
 
 | Document | Contents |
 |---|---|
+| [QUICKSTART.md](docs/design/QUICKSTART.md) | Runnable examples, concept map, onboarding friction |
 | [STATUS.md](docs/design/STATUS.md) | Module map with dependency graphs |
 | [SPI.md](docs/design/SPI.md) | Every extension point and its contract |
 | [TOOLS.md](docs/design/TOOLS.md) | Tool manifest, risk tiers, approval flow |
@@ -141,20 +142,33 @@ Deeper design documents live in [`docs/`](docs/):
 
 Zero third-party dependencies for the core:
 
+> **Not on PyPI yet.** The name `agent-runtime` on PyPI belongs to an unrelated
+> AutoGen placeholder package (v0.0.1) that pulls in four `autogen-*`
+> distributions and cannot be imported. Do not `pip install agent-runtime`.
+> The distribution name will be `turing-agent-runtime` when it is published.
+
+Install from the repository:
+
 ```bash
-pip install agent-runtime                 # core only, no dependencies
-pip install "agent-runtime[all]"          # everything except service-backed backends
-pip install "agent-runtime[server]"       # just the HTTP surface
+pip install "git+https://github.com/XiaoBinGan/Turing_AgentRuntime.git"          # core only
+pip install "git+https://github.com/XiaoBinGan/Turing_AgentRuntime.git#egg=turing-agent-runtime[server]"
 ```
 
-Or work from a clone, which also gives you the demo and the test suite:
+Or work from a clone, which also gives you the examples, the demo and the tests:
 
 ```bash
 git clone https://github.com/XiaoBinGan/Turing_AgentRuntime.git
-cd agent-runtime
+cd Turing_AgentRuntime
 python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
-.venv/bin/python demo/run.py            # 11 end-to-end scenarios
+
+.venv/bin/python examples/quickstart/01_minimal.py    # 40 lines, no API key needed
+.venv/bin/python examples/quickstart/03_approval.py   # a T2 tool, approval, three outcomes
+.venv/bin/python demo/run.py                          # 11 end-to-end scenarios
 ```
+
+Start with `01_minimal.py`: a custom tool, a fake LLM, one loop, printed trace.
+No network, no key. Then read [QUICKSTART.md](docs/design/QUICKSTART.md) for the
+concept map.
 
 `requirements-core.txt` is empty by design. The core runtime runs on the standard
 library alone. `requirements.txt` adds the optional integrations (FastAPI,
@@ -184,7 +198,7 @@ curl -X POST localhost:8000/v1/turns \
 
 Verified by the suite:
 
-- 2215 unit and integration tests, stable across repeated full runs
+- 2223 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - Concurrency: 100 threads against one gateway, 8 threads x 5 turns, 60 mixed
   workflow requests, zero exceptions
@@ -217,10 +231,8 @@ Also measured:
 
 What is still open:
 
-- **Load generator is too weak.** One client process caps out around 110-130 RPS,
-  which hides whatever the server can actually do. A firm multi-worker number
-  needs `wrk`/`k6` or a second machine. Stated as an open question rather than
-  a measured result.
+- **8-worker curve needs a second machine.** The box has 10 cores and the load
+  generator shares them, so 3.59x is a floor, not a ceiling.
 - **sqlite write contention** under concurrent load is not quantified.
 - **Soak ran 20 minutes**, not hours.
 
@@ -260,7 +272,7 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**145 个模块、7.6 万行、2215 个用例、11 个端到端场景**，
+测试套件的检验：**150 个模块、7.6 万行、2223 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
@@ -316,20 +328,31 @@ safe to adopt.
 
 核心零第三方依赖：
 
+> **尚未发布到 PyPI。** PyPI 上的 `agent-runtime` 属于一个无关的 AutoGen 占位包
+> （v0.0.1，会拉进四个 `autogen-*` 包，且根本无法 import）。
+> **不要执行 `pip install agent-runtime`。** 发布后本项目的分发名是 `turing-agent-runtime`。
+
+从仓库安装：
+
 ```bash
-pip install agent-runtime                 # 仅核心，零依赖
-pip install "agent-runtime[all]"          # 除需外部服务的后端之外的全量
-pip install "agent-runtime[server]"       # 只要 HTTP 面
+pip install "git+https://github.com/XiaoBinGan/Turing_AgentRuntime.git"          # 仅核心
+pip install "git+https://github.com/XiaoBinGan/Turing_AgentRuntime.git#egg=turing-agent-runtime[server]"
 ```
 
-或者 clone 下来（同时得到 demo 与测试套件）：
+或者 clone 下来（同时得到示例、demo 与测试套件）：
 
 ```bash
 git clone https://github.com/XiaoBinGan/Turing_AgentRuntime.git
-cd agent-runtime
+cd Turing_AgentRuntime
 python3 -m venv .venv && .venv/bin/pip install -r requirements-core.txt
-.venv/bin/python demo/run.py            # 11 个端到端场景
+
+.venv/bin/python examples/quickstart/01_minimal.py    # 40 行，不需要 API key
+.venv/bin/python examples/quickstart/03_approval.py   # T2 工具 → 审批 → 三种结果
+.venv/bin/python demo/run.py                          # 11 个端到端场景
 ```
+
+**从 `01_minimal.py` 开始**：一个自定义工具、一个假 LLM、跑一次循环、打印轨迹。
+不联网、不需要密钥。然后看 [QUICKSTART.md](docs/design/QUICKSTART.md) 的概念速查表。
 
 `requirements-core.txt` 是空的，这是设计。核心运行时只靠标准库。
 `requirements.txt` 装的是可选集成（FastAPI、tiktoken、prometheus_client、
@@ -344,7 +367,7 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 
 ## 已验证与未验证
 
-**已验证**：2215 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
+**已验证**：2223 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
 零异常；900 回合内存增长 3KB；并发下限流精确（40 并发 limit 10 恰好 10 通过）；
 真模型 4-6 步收敛；真 Milvus 集群、真 Langfuse 投递、真 OTLP；优雅关闭顺序、
 检查点崩溃恢复、workflow 持久化。
@@ -367,14 +390,12 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 |---|---|---|
 | 长稳 20 分钟（两轮） | 12.1 万 / 13.7 万请求、100% 成功、p99 105-167ms、线程与句柄恒定、稳态 85MB、峰值 238MB、停止负载后回落到 6MB | `scripts/soak_test.py` |
 | 真实 LLM 延迟 | deepseek-flash p50 2672ms、p99 3805ms；4-6 步的回合端到端 11-16 秒 | `scripts/real_llm_capacity.py` |
-| 多 worker | 请求确实分散到 4 个 worker，但吞吐没提升——**压测端先饱和** | `AGENT_RUNTIME_WORKERS` |
+| 多 worker | **4 worker 提升 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%），8 worker 3.59×。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
 | 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
 
 **仍然开放的**：
 
-- **压测端太弱**：单客户端约 110-130 RPS 就饱和，掩盖了服务端真实能力。
-  确定的多 worker 结论需要 `wrk`/`k6` 或多机压测。这一项如实标为"未得出结论"，
-  不假装测过。
+- **8 worker 的曲线需要第二台机器**：整机 10 核且压测端同机，3.59× 是下限不是上限。
 - **sqlite 写入争用**未量化。
 - **长稳只跑了 20 分钟**，不是数小时。
 

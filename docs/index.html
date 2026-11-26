@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Turing Agent Runtime — 生产形态的 LLM Agent 运行时</title>
-<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。145 模块 / 7.6 万行 / 2215 用例全绿。">
+<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。150 模块 / 7.6 万行 / 2223 用例全绿。">
 <meta property="og:title" content="Turing Agent Runtime">
 <meta property="og:description" content="生产形态的 LLM Agent 运行时。运行时拥有形状，应用拥有内容。">
 <meta property="og:type" content="website">
@@ -162,9 +162,9 @@ footer a{color:var(--fg2)}
       <a class="btn" href="#start">快速开始</a>
     </div>
     <div class="stats">
-      <div class="stat"><div class="n">145</div><div class="l">模块</div></div>
+      <div class="stat"><div class="n">150</div><div class="l">模块</div></div>
       <div class="stat"><div class="n">76k</div><div class="l">行代码</div></div>
-      <div class="stat"><div class="n">2215</div><div class="l">测试用例</div></div>
+      <div class="stat"><div class="n">2223</div><div class="l">测试用例</div></div>
       <div class="stat"><div class="n">11</div><div class="l">端到端场景</div></div>
       <div class="stat"><div class="n">15</div><div class="l">冻结契约</div></div>
     </div>
@@ -298,7 +298,7 @@ footer a{color:var(--fg2)}
         <h3>已验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>单元 + 集成</td><td><span class="tag ok">2215 通过</span></td></tr>
+            <tr><td>单元 + 集成</td><td><span class="tag ok">2223 通过</span></td></tr>
             <tr><td>端到端场景</td><td><span class="tag ok">11 / 80 断言</span></td></tr>
             <tr><td>重复跑稳定性</td><td><span class="tag ok">连跑 5 次</span></td></tr>
             <tr><td>并发</td><td><span class="tag ok">100 线程零异常</span></td></tr>
@@ -317,6 +317,8 @@ footer a{color:var(--fg2)}
             <tr><td>长稳压测</td><td><span class="tag ok">20min ×2 / 13.7 万请求 / p99 105ms</span></td></tr>
             <tr><td>真实 LLM 延迟</td><td><span class="tag ok">p50 2.7s / p99 3.8s</span></td></tr>
             <tr><td>会话跨副本</td><td><span class="tag ok">STORE=redis，turn_index 连续</span></td></tr>
+            <tr><td>多 worker 扩展</td><td><span class="tag ok">4 worker 2.97× / 8 worker 3.59×</span></td></tr>
+            <tr><td>sqlite 写入争用</td><td><span class="tag ok">多进程 3.07×，零失败</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -324,7 +326,7 @@ footer a{color:var(--fg2)}
         <h3>未验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>多 worker 吞吐</td><td><span class="tag no">压测客户端先饱和，未测出</span></td></tr>
+            <tr><td>8 worker 曲线</td><td><span class="tag part">需第二台机器</span></td></tr>
             <tr><td>sqlite 写入争用</td><td><span class="tag no">未量化</span></td></tr>
             <tr><td>长稳 &gt; 20 分钟</td><td><span class="tag part">数小时级未跑</span></td></tr>
           </tbody>
@@ -374,13 +376,17 @@ footer a{color:var(--fg2)}
     <p class="sub">核心零第三方依赖，装完即跑。</p>
 <pre><span class="c"># 克隆与最小安装（requirements-core.txt 是空文件，这是设计）</span>
 git clone https://github.com/XiaoBinGan/Turing_AgentRuntime.git
-cd agent-runtime
+cd Turing_AgentRuntime
 python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements-core.txt
 
-<span class="c"># 跑 11 个端到端场景</span>
-.venv/bin/python demo/run.py
+<span class="c"># 从最小示例开始：40 行，不需要 API key</span>
+.venv/bin/python examples/quickstart/01_minimal.py
 
-<span class="c"># 六道门禁：编译 / 测试 / 契约 / 文档事实 / 场景 / HTTP</span>
+<span class="c"># 审批流：T2 工具 → 挂起 → 三种结果</span>
+.venv/bin/python examples/quickstart/03_approval.py
+
+<span class="c"># 11 个端到端场景 + 七道门禁</span>
+.venv/bin/python demo/run.py
 ./verify.sh</pre>
 
     <h3 style="margin-top:32px">起步一个回合</h3>

@@ -272,7 +272,7 @@ __all__ = [
 ]
 
 #: 运行时自述里的版本号。不读 git、不 import 打包元数据：一个探针不该为此碰文件系统。
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 #: 服务名（进日志的 `service` 字段与 /v1/info）
 SERVICE_NAME = "agent-runtime"

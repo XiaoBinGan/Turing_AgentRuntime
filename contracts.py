@@ -356,6 +356,39 @@ class ToolManifest:
     #: items / enum / minimum / maximum / minLength / maxLength。
     input_schema: dict | None = None
 
+    def __post_init__(self) -> None:
+        """**收口 `risk_tier` 与 `side_effect` 的类型**。
+
+        为什么必须在构造期做：这两个字段有枚举，但 Python 不拦裸 int。
+        `ToolManifest(risk_tier=0)` 构造成功，然后 `builder._render_tools` 读
+        `m.risk_tier.name` 抛 `AttributeError` —— 而 `Loop._build_prompt` 把
+        builder 的异常**吞成一条 warning**，继续跑。表现是：
+
+            phase=DONE、steps=2、text 正常，但**模型一个工具都看不到**
+
+        这是最糟的一类失败：不报错、结果看似正常、能力静默消失。
+        在构造期收口，让错误在**定义工具的那一行**爆出来。
+
+        `RiskTier` 是 `int` 子类，所以 `RiskTier.T0_SAFE == 0` 为真；
+        非法值（如 9）会被 `ValueError` 明确拒。
+        """
+        if not isinstance(self.risk_tier, RiskTier):
+            try:
+                object.__setattr__(self, "risk_tier", RiskTier(int(self.risk_tier)))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"risk_tier={self.risk_tier!r} 不是合法档位"
+                    f"（0=T0_SAFE / 1=T1_LOW / 2=T2_HIGH / 3=T3_CRITICAL）：{exc}"
+                ) from exc
+        if not isinstance(self.side_effect, SideEffect):
+            try:
+                object.__setattr__(self, "side_effect", SideEffect(self.side_effect))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"side_effect={self.side_effect!r} 不是合法值"
+                    f"（read_only / mutating / irreversible）：{exc}"
+                ) from exc
+
     #: `idempotent` 的**三态**语义（由 Dispatcher 解释，见 `cacheable()`）：
     #:
     #:   * `None`  —— 未声明。只读工具按 True 处理；写工具按 False 处理，
