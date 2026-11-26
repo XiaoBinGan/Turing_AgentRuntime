@@ -272,7 +272,7 @@ __all__ = [
 ]
 
 #: 运行时自述里的版本号。不读 git、不 import 打包元数据：一个探针不该为此碰文件系统。
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 
 #: 服务名（进日志的 `service` 字段与 /v1/info）
 SERVICE_NAME = "agent-runtime"
@@ -309,6 +309,12 @@ STATUS_BY_CODE: dict[str, int] = {
     "rate_limited": 429,
     "shutting_down": 503,
     "resume_failed": 500,
+    # **409 而不是 500**：ctx_id 指向一个挂起等确认的任务，但请求没给 decision。
+    # 这是"资源当前状态与请求冲突"——客户端换带 decision 的请求就能成功，
+    # 所以它既不是服务端故障（500），也不是永久拒绝（403）。
+    # 早先 `decision` 在 Gateway 里硬编码 True，这个码根本不会出现；
+    # 现在"没表态"被显式拒绝，就必须有一个能表达"补上 decision 再来"的状态码。
+    "resume_needs_decision": 409,
     "internal_error": 500,
     "loop_error": 500,
 }
@@ -486,6 +492,12 @@ class TurnRequest(BaseModel):
         default=None, max_length=128,
         description="会话 id。带上 = 承接该会话前几轮的问答骨架（需服务端开 "
                     "AGENT_RUNTIME_SESSION=1）；不带 = 新会话，结果里会返回一个")
+    decision: bool | None = Field(
+        default=None,
+        description="**仅当 ctx_id 指向一个挂起等待确认的任务时有意义**。"
+                    "true = 批准、false = 拒绝。不给则拒绝续跑并返回 "
+                    "resume_needs_decision（没表态不等于同意）。"
+                    "普通回合传了会被忽略")
 
     def to_gateway_request(self) -> dict:
         """→ Gateway 的 request dict。
@@ -500,7 +512,7 @@ class TurnRequest(BaseModel):
         # session_id 必须原样透传：SessionGateway 靠它找历史。
         # 早期漏了它 —— pydantic 的 extra="forbid" 会把请求里的 session_id 直接拒掉（422），
         # 表面上"多轮对话不工作"，实际是字段没进模型。
-        for name in ("task_id", "ctx_id", "deadline_ms", "session_id"):
+        for name in ("task_id", "ctx_id", "deadline_ms", "session_id", "decision"):
             value = getattr(self, name)
             if value is not None:
                 request[name] = value
@@ -2744,6 +2756,32 @@ def _replay_receive(body: bytes, real_receive: Any) -> Any:
     return receive
 
 
+#: ctx_id 的合法字符集。和 `core.store` 的约束保持一致（要能当文件名用），
+#: 在端点上先拦一次：非法字符不该进 store 的键空间。
+_CTX_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+
+
+class ResumeRequest(BaseModel):
+    """`POST /v1/turns/{ctx_id}/resume` 的请求体。
+
+    **和 `POST /v1/turns` 带 decision 的区别**：这个端点的语义是"我在处理一个
+    已挂起的任务"，路径里就写明 ctx_id，客户端不需要知道 goal、也不会误建新回合。
+    `decision` 在这里**必填** —— 这个端点的唯一目的就是表态。
+
+    `extra="forbid"`：写错字段必须 422，不能让"我以为批准了、实际没传"静默通过 ——
+    那正是这个端点存在要解决的那类故障。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: bool = Field(..., description="true = 批准执行挂起的动作；false = 拒绝")
+    reason: str = Field(default="", max_length=MAX_GOAL_CHARS,
+                        description="人类给的理由（会写进 history，模型据此换方案）")
+    principal: PrincipalBody = Field(default_factory=PrincipalBody)
+    deadline_ms: float | None = Field(default=None, gt=0)
+    budget: BudgetBody | None = Field(default=None)
+
+
 class BodyLimitMiddleware:
     """请求体大小上限（纯 ASGI；**读 header 就拒**，不把超限的 body 收进内存）。
 
@@ -3674,6 +3712,100 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
                 status_code=500)
         response = _result_response(result)
         _observe_http(metrics, "/v1/turns", response.status_code)
+        return response
+
+    # ── ①b 续跑挂起的回合（审批）──────────────────────────────
+    @app.post("/v1/turns/{ctx_id}/resume", tags=["turns"],
+              summary="批准或拒绝一个挂起等待确认的回合")
+    async def post_turn_resume(ctx_id: str, body: ResumeRequest,
+                               request: Request) -> Response:
+        """**审批的 HTTP 入口**。
+
+        在此之前，审批状态机只有 Python API 能用：`loop.resume()` 存在、
+        `resume_from_store()` 存在，但 `/v1/turns` 里 `decision` 是硬编码
+        `True` —— 等于"拿着 ctx_id 再发一次请求就自动批准"。拒绝路径根本
+        不存在，而这恰恰是审批要防的事。
+
+        状态码：
+
+            200  批准后跑完，或拒绝后模型已换方案跑完（都是**成功**的回合结果）
+            404  ctx_id 不存在 / 已过期 / 不属于调用方（不泄露"存在但不是你的"）
+            409  ctx_id 存在但不在 WAITING_USER（没什么可批的）
+            422  请求体不合法
+        """
+        if shutdown.is_shutting_down():
+            _observe_http(metrics, "/v1/turns/resume", 503)
+            return JSONResponse(content=_shutting_down_payload(), status_code=503)
+
+        missing = _missing_identity(body, _header_principal(request))
+        if missing:
+            _observe_http(metrics, "/v1/turns/resume", 422)
+            return JSONResponse(
+                content=_validation_payload(request.url.path, missing),
+                status_code=422)
+
+        # ctx_id 直接进 store 的键空间，先按 `core.store` 的字符集校验，
+        # 避免把路径穿越一类的东西带进文件型 store。
+        if not _CTX_ID_RE.fullmatch(ctx_id):
+            _observe_http(metrics, "/v1/turns/resume", 422)
+            return JSONResponse(
+                content={"error": "validation_failed", "status": 422,
+                         "detail": f"ctx_id={ctx_id!r} 含非法字符",
+                         "failed": ["ctx_id"]},
+                status_code=422)
+
+        gateway_request: dict[str, Any] = {
+            "goal": "继续",              # 挂起的回合不重新规划目标，这里有值即可
+            "ctx_id": ctx_id,
+            "decision": bool(body.decision),
+            "principal": body.principal.to_gateway(),
+        }
+        if body.reason:
+            gateway_request["reason"] = body.reason
+        if body.deadline_ms is not None:
+            gateway_request["deadline_ms"] = body.deadline_ms
+        if body.budget is not None:
+            dumped = {k: v for k, v in body.budget.model_dump().items()
+                      if v is not None}
+            if dumped:
+                gateway_request["budget"] = dumped
+        authed = _header_principal(request)
+        if authed is not None:
+            conflict = _principal_conflict(body.principal, authed)
+            if conflict:
+                _observe_http(metrics, "/v1/turns/resume", 403)
+                return _conflict_response(request.url.path, conflict)
+            gateway_request["principal"] = _principal_dict(authed)
+
+        try:
+            result = await asyncio.to_thread(gateway.handle, gateway_request)
+        except Exception as exc:        # noqa: BLE001
+            _observe_http(metrics, "/v1/turns/resume", 500)
+            return JSONResponse(
+                content={"error": "internal_error",
+                         "detail": f"{type(exc).__name__}: {exc}",
+                         "status": 500},
+                status_code=500)
+
+        # 把 Gateway 的拒绝翻译成这个端点自己的语义。
+        # `resume_failed` = 载入失败/不存在 → 404（同时也是防枚举：不区分
+        # "不存在"与"存在但不是你的"）。
+        if not result.ok and result.error.startswith("resume_failed"):
+            _observe_http(metrics, "/v1/turns/resume", 404)
+            return JSONResponse(
+                content={"error": "ctx_not_found", "status": 404,
+                         "detail": f"ctx_id={ctx_id} 不存在、已过期或无权访问"},
+                status_code=404)
+        # 载入了但没在等确认 → 409：客户端调错了端点，不是资源缺失。
+        if (not result.ok and result.error.startswith("resume_needs_decision")):
+            _observe_http(metrics, "/v1/turns/resume", 409)
+            return JSONResponse(
+                content={"error": "not_awaiting_confirmation", "status": 409,
+                         "detail": "该 ctx_id 不处于等待确认状态（可能已处理或从未挂起）"},
+                status_code=409)
+
+        response = _result_response(result)
+        _observe_http(metrics, "/v1/turns/resume", response.status_code)
         return response
 
     # ── ② 流式回合（SSE）────────────────────────────────────

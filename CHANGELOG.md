@@ -10,6 +10,66 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.5.0] - 2026-11-27
+
+### Fixed
+
+- **Approval was auto-granted on the HTTP surface.** `Gateway` hardcoded
+  `decision=True` when resuming a suspended turn, so any client holding a
+  `ctx_id` approved the pending T2+ action simply by sending it again. The
+  reject path did not exist at all, which is the one thing an approval gate is
+  for. `decision` is now required and explicit; omitting it returns
+  `resume_needs_decision` (409) rather than proceeding.
+
+  This is the kind of defect that looks like a missing feature. The state
+  machine was complete — `Phase.WAITING_USER`, `Approval`, `loop.resume()` —
+  and the demo exercised it. What was missing was the ability to say no.
+
+### Added
+
+- **`POST /v1/turns/{ctx_id}/resume`** — the approval entry point. `decision`
+  is a required boolean; `reason` is forwarded to the loop so a rejected model
+  can choose a different plan instead of retrying the same action.
+
+  | Status | Meaning |
+  |---|---|
+  | 200 | Approved and completed, or rejected and the model re-planned |
+  | 404 | ctx_id unknown, expired, or not the caller's (deliberately not distinguished) |
+  | 409 | ctx_id exists but is not awaiting confirmation |
+  | 422 | `decision` missing or malformed |
+
+- `decision` is also accepted on `POST /v1/turns` for clients that would rather
+  not switch endpoints. It only means something when `ctx_id` points at a
+  suspended turn; on an ordinary turn it is ignored.
+
+- `resume_needs_decision` maps to **409 Conflict**, not 500. Supplying the field
+  fixes the request, so it is a state conflict rather than a server fault.
+
+- RUNBOOK section 15 on handling suspended turns, including what not to do:
+  do not resend the same goal (that opens a new task and leaves the old one
+  hanging), do not omit `decision` and hope, and do not delete the checkpoint
+  before deciding, because the `pending_confirmation` and its `args_hash` are
+  what make a safe replay possible.
+
+### Verified end to end
+
+A full flow over the HTTP surface, with a prompt-aware fake model:
+
+```
+POST /v1/turns                 -> 200  phase=WAITING_USER  tool not executed
+POST /v1/turns (no decision)   -> 409  resume_needs_decision
+POST /v1/turns/{id}/resume false -> 200  rejected, no side effect
+POST /v1/turns/{id}/resume true  -> 200  phase=DONE, executed exactly once
+```
+
+The "exactly once" was worth checking separately: a naive mock that answers by
+call count rather than by prompt content re-triggers the tool after replay and
+makes the run look non-idempotent. The tool result is rendered into the prompt
+as `<<<TOOL_RESULTS>>>`, so a model that reads its context converges; one that
+counts calls does not.
+
+---
+
 ## [0.4.1] - 2026-11-26
 
 Documentation and gates only; no code changes outside the fact checker.
@@ -443,6 +503,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.5.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.5.0
 [0.4.1]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.1
 [0.4.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.0
 [0.3.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.3.0

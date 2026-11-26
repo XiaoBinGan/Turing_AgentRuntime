@@ -455,6 +455,55 @@ docker exec CONTAINER grep -oE "<tool_call>|<\|python_tag\|>|function=" \
 
 ---
 
+## 15. 回合挂在 WAITING_USER（等审批）
+
+### 症状
+
+`POST /v1/turns` 返回 **200** 但 `phase=WAITING_USER`、`term_reason=NEEDS_CONFIRMATION`。
+
+**这不是故障**：挂起是一个成功的回合结果，checkpoint 已落盘，工具**没有执行**。
+
+### 确认
+
+```bash
+curl -s -X POST $HOST/v1/turns -H 'Content-Type: application/json' \
+  -d '{"goal":"...","principal":{...}}' | jq '{phase, term_reason, ctx_id}'
+```
+
+`ctx_id` 就是续跑的把手。
+
+### 动作：批准或拒绝
+
+```bash
+# 批准（工具会真的执行）
+curl -s -X POST $HOST/v1/turns/$CTX_ID/resume \
+  -H 'Content-Type: application/json' \
+  -d '{"decision":true,"principal":{...}}'
+
+# 拒绝（无副作用，模型被告知换方案）
+curl -s -X POST $HOST/v1/turns/$CTX_ID/resume \
+  -H 'Content-Type: application/json' \
+  -d '{"decision":false,"reason":"收件人写错了，先别发","principal":{...}}'
+```
+
+| 状态码 | 含义 |
+|---|---|
+| 200 | 处理完（批准后跑完，或拒绝后模型已换方案） |
+| 404 | ctx_id 不存在 / 已过期 / 不属于调用方 |
+| 409 | ctx_id 存在但不在等待确认状态 |
+| 422 | 请求体不合法（`decision` 必填） |
+
+### 不要做
+
+- **不要**再发一次相同目标的 `/v1/turns`。那会开一个新任务，旧任务继续挂着。
+- **不要**不带 `decision` 就带 `ctx_id` 打 `/v1/turns` —— 会得到 409
+  `resume_needs_decision`。**没表态不等于同意**：早先这里是硬编码批准，
+  等于任何人拿着 ctx_id 发一次请求就自动执行了挂起的危险操作。
+- **不要**在批准前删掉 checkpoint（`store.delete`）。删了就没有 `pending_confirmation`，
+  也就没有了 `args_hash`，无法再安全地重放。
+
+---
+
 ## 待补的观测能力
 
 以下三项目前**没有指标**，所以没有对应告警。补 metric 是让它们可运维的前提：

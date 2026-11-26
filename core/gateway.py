@@ -230,6 +230,17 @@ class _Prepared:
     quota: dict
     resumed: bool
     suspended: bool = False
+    #: 续跑一个**挂起**的任务时，人类给的是批准还是拒绝。
+    #:
+    #: **为什么必须显式传**：早先这里硬编码 `True`，等于"任何人拿着 ctx_id
+    #: 发一次请求就自动批准了之前挂起的危险操作"。这不只是缺少拒绝能力 ——
+    #: 它把一个需要人类判断的动作变成了**隐式自动批准**。
+    #:
+    #: `None` = 调用方没表态。此时**不续跑**，直接拒绝：
+    #: 没表态不等于同意。
+    decision: bool | None = None
+    #: 人类给的理由。拒绝时最关键：模型靠它换方案，而不是盲目重试同一个动作。
+    reason: str = ""
 
 
 @dataclass
@@ -602,6 +613,25 @@ class Gateway:
         # **副作用落盘**：非只读工具成功之后立刻存一份，崩溃了才知道
         # "哪一步已经真做了"。没有 store 就不装（`None` = Loop 跳过）。
         e.checkpoint = self._make_side_effect_checkpoint(ctx_id)
+        # 续跑判定：只有挂起的任务才需要 decision；普通回合传了也不该有意义。
+        raw_decision = request.get("decision")
+        if isinstance(raw_decision, bool):
+            decision: bool | None = raw_decision
+        elif raw_decision is None:
+            decision = None
+        else:
+            # 接受 "approve"/"reject"/"true"/"false" 这类字符串，但别猜：
+            # 猜错方向等于替人类批准危险操作。
+            text = str(raw_decision).strip().lower()
+            if text in ("approve", "approved", "true", "yes", "1", "批准", "同意"):
+                decision = True
+            elif text in ("reject", "rejected", "false", "no", "0", "拒绝", "不同意"):
+                decision = False
+            else:
+                raise _Reject(
+                    "input_blocked",
+                    f"decision={raw_decision!r} 无法解析。"
+                    f"用 true/false，或 approve/reject")
         tenant_ctx = TenantContext(
             tenant=principal.tenant,
             user_id=principal.user_id,
@@ -615,7 +645,9 @@ class Gateway:
         )
         return _Prepared(goal=goal, principal=principal, tenant_ctx=tenant_ctx,
                          e=e, ctx=ctx, ctx_id=ctx_id, quota=quota,
-                         resumed=resumed, suspended=suspended)
+                         resumed=resumed, suspended=suspended,
+                         decision=decision,
+                         reason=str(request.get("reason") or "")[:2000])
 
     # ── ① 请求形状 ─────────────────────────────────────────
     def _check_shape(self, request: Any) -> dict:
@@ -1145,8 +1177,23 @@ class Gateway:
                     f"loop {type(loop).__name__} 缺少 "
                     f"{'resume' if prepared.suspended else 'run'}()")
             if prepared.suspended:
-                result = run(prepared.ctx, prepared.e, True,
-                             "gateway: 续跑已挂起的等待确认任务")
+                # **没表态就不续跑**。原先这里写死 `True`：任何持有 ctx_id 的人
+                # 发一次请求，就等于批准了之前挂起的 T2+ 危险操作 —— 把"需要
+                # 人类判断"退化成"隐式自动批准"。拒绝路径也因此根本不存在。
+                if prepared.decision is None:
+                    turn.ok = False
+                    turn.error = (
+                        "resume_needs_decision: ctx_id 指向一个挂起等待确认的任务，"
+                        "必须显式给 decision=true（批准）或 false（拒绝）")
+                    turn.phase = Phase.WAITING_USER.value
+                    turn.term_reason = "NEEDS_CONFIRMATION"
+                    turn.vertex["budget"] = self._budget_of(prepared.ctx, prepared.e)
+                    return self._finalize(turn, t0)
+                if prepared.decision:
+                    reason = prepared.reason or "gateway: 人类批准"
+                else:
+                    reason = prepared.reason or "gateway: 人类拒绝"
+                result = run(prepared.ctx, prepared.e, prepared.decision, reason)
             else:
                 result = run(prepared.goal, prepared.ctx, prepared.e)
         except Exception as exc:

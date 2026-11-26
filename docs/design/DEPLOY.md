@@ -244,6 +244,21 @@ AGENT_RUNTIME_AUTH=off .venv/bin/python serve.py     # 显式裸奔，仅限本�
 | `OPENAI_TEMPERATURE` | 否 | adapter 默认 | 采样温度 | 非数字 → 被静默忽略（不报错），你以为设了 |
 | `OPENAI_PRICE_IN_PER_M` / `OPENAI_PRICE_OUT_PER_M` | 否 | 0 | 成本核算单价（每百万 token，入/出分开） | 不配 → `budget.cost_total_usd` 恒为 0，**成本预算永不触发**，超支无告警；配成「每千 token」的价 → 成本放大 1000 倍，预算瞬间打满 |
 
+### 审批端点
+
+T2+ 风险工具会挂起等审批。批准/拒绝走专用端点：
+
+```
+POST /v1/turns/{ctx_id}/resume
+{"decision": true | false, "reason": "可选，会写进 history 让模型换方案"}
+```
+
+`decision` **必填**。这是刻意的：这个端点唯一的语义就是表态，
+"没给"必须报错而不是默认批准。
+
+`POST /v1/turns` 也接受 `decision` 字段（供不想换端点的客户端），
+但**只对挂起的 ctx_id 有意义**，普通回合传了会被忽略。
+
 ### 接本地推理模型（vLLM / Strata / llama.cpp）时的三个必查项
 
 这三条都是实测踩出来的，**共同点是失败时不报错**。

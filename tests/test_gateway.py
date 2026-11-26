@@ -76,6 +76,9 @@ class FakeLoop:
         self.last_ctx = ctx
         self.last_e = e
         self.last_decision = decision
+        # 别名：测试里读起来更明确（"这次 resume 的 decision 是什么"）
+        self.last_resume_decision = decision
+        self.last_resume_reason = reason
         if self.exc is not None:
             raise self.exc
         return self.result
@@ -498,14 +501,66 @@ class TestResume(unittest.TestCase):
         self.assertEqual(loop.resume_calls, 0)
 
     def test_30_waiting_user_ctx_goes_through_resume(self) -> None:
+        """带 `decision=True` 才续跑，且走的是 `resume` 不是 `run`。"""
         store = FakeStore({"ctx_susp": _serialized_ctx(phase=Phase.WAITING_USER)})
         loop = FakeLoop(result=Result(phase=Phase.DONE, term_reason=TermReason.DONE,
                                       text="批准后已执行。", steps=2))
         gw = Gateway(lambda g, tc: loop, governance=Governance(), store=store)
-        res = gw.handle(request(ctx_id="ctx_susp"))
+        res = gw.handle(request(ctx_id="ctx_susp", decision=True))
         self.assertTrue(res.ok, res.error)
         self.assertEqual(loop.resume_calls, 1)
         self.assertEqual(loop.run_calls, 0)
+
+    def test_30b_waiting_user_without_decision_refuses_to_resume(self) -> None:
+        """**没表态不等于同意**。
+
+        早先这里 `decision` 硬编码 `True`：任何持有 ctx_id 的人发一次请求就
+        自动批准了挂起的 T2+ 危险操作。那不只是一个缺失的拒绝路径，它把
+        "需要人类判断"退化成"隐式自动批准"。
+        """
+        store = FakeStore({"ctx_susp": _serialized_ctx(phase=Phase.WAITING_USER)})
+        loop = FakeLoop()
+        gw = Gateway(lambda g, tc: loop, governance=Governance(), store=store)
+        res = gw.handle(request(ctx_id="ctx_susp"))
+        self.assertFalse(res.ok)
+        self.assertTrue(res.error.startswith("resume_needs_decision"), res.error)
+        self.assertEqual(loop.resume_calls, 0, "没表态就不该调 resume")
+        self.assertEqual(loop.run_calls, 0)
+
+    def test_30c_explicit_reject_goes_through_resume(self) -> None:
+        """`decision=False` 要能真的拒绝 —— 这是审批存在的理由。"""
+        store = FakeStore({"ctx_susp": _serialized_ctx(phase=Phase.WAITING_USER)})
+        loop = FakeLoop(result=Result(phase=Phase.DONE, term_reason=TermReason.DONE,
+                                      text="已换用只读方案。", steps=2))
+        gw = Gateway(lambda g, tc: loop, governance=Governance(), store=store)
+        res = gw.handle(request(ctx_id="ctx_susp", decision=False))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(loop.resume_calls, 1)
+        # 传给 loop.resume 的第一个位置参数必须是 False
+        self.assertIs(loop.last_resume_decision, False,
+                      "decision=False 不能被执行层当成批准")
+
+    def test_30d_reason_reaches_loop(self) -> None:
+        """拒绝时人类给的理由要送到 Loop —— 模型靠它换方案。"""
+        store = FakeStore({"ctx_susp": _serialized_ctx(phase=Phase.WAITING_USER)})
+        loop = FakeLoop()
+        gw = Gateway(lambda g, tc: loop, governance=Governance(), store=store)
+        gw.handle(request(ctx_id="ctx_susp", decision=False,
+                          reason="收件人写错了，先别发"))
+        self.assertIn("收件人写错了", loop.last_resume_reason or "")
+
+    def test_30e_decision_string_accepted(self) -> None:
+        """`"approve"` / `"reject"` 也认，但**不认识的值必须拒绝**，不能猜。"""
+        store = FakeStore({"ctx_susp": _serialized_ctx(phase=Phase.WAITING_USER)})
+        loop = FakeLoop()
+        gw = Gateway(lambda g, tc: loop, governance=Governance(), store=store)
+        res = gw.handle(request(ctx_id="ctx_susp", decision="reject"))
+        self.assertTrue(res.ok, res.error)
+        self.assertIs(loop.last_resume_decision, False)
+
+        bad = gw.handle(request(ctx_id="ctx_susp", decision="maybe"))
+        self.assertFalse(bad.ok)
+        self.assertTrue(bad.error.startswith("input_blocked"), bad.error)
 
     def test_31_waits_user_saves_checkpoint(self) -> None:
         store = FakeStore()
