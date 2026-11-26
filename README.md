@@ -133,6 +133,7 @@ Deeper design documents live in [`docs/`](docs/):
 | [TOOLS.md](docs/design/TOOLS.md) | Tool manifest, risk tiers, approval flow |
 | [DEPLOY.md](docs/design/DEPLOY.md) | 20+ environment variables, failure modes |
 | [ROBUSTNESS.md](docs/design/ROBUSTNESS.md) | Destructive test findings and fixes |
+| [RAG-VERIFICATION.md](docs/design/RAG-VERIFICATION.md) | Real embedding and reranker backends, and why two-stage retrieval matters |
 | [DESIGN-C.md](docs/design/DESIGN-C.md) | Parallel tools, sub-agent progress, workflow engine |
 | [DEVLOG.md](docs/design/DEVLOG.md) | Round-by-round engineering log |
 

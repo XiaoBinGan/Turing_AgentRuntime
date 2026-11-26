@@ -316,6 +316,7 @@ footer a{color:var(--fg2)}
             <tr><td>故障演练</td><td><span class="tag ok">6 项姿态验证</span></td></tr>
             <tr><td>长稳压测</td><td><span class="tag ok">20min ×2 / 13.7 万请求 / p99 105ms</span></td></tr>
             <tr><td>真实 LLM 延迟</td><td><span class="tag ok">p50 2.7s / p99 3.8s</span></td></tr>
+            <tr><td>真实 Embedding + Rerank</td><td><span class="tag ok">2B vLLM，两步检索纠正排序</span></td></tr>
             <tr><td>会话跨副本</td><td><span class="tag ok">STORE=redis，turn_index 连续</span></td></tr>
             <tr><td>多 worker 扩展</td><td><span class="tag ok">4 worker 2.97× / 8 worker 3.59×</span></td></tr>
             <tr><td>sqlite 写入争用</td><td><span class="tag ok">多进程 3.07×，零失败</span></td></tr>
