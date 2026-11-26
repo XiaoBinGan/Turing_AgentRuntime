@@ -138,6 +138,61 @@ def estimate_tokens(text: str) -> int:
     return max(1, int(cjk + other / 3.5))
 
 
+def scrape_prefix_cache_tokens(metrics_url: str, *, timeout_s: float = 5.0,
+                               model_name: str = "") -> int:
+    """从 vLLM 的 `/metrics` 里读**累计**缓存命中 token 数。
+
+    **为什么需要它**：vLLM 0.32 的 usage API **完全不报缓存**。实测
+    （`Qwen3-VL-Embedding-2B` + `--enable-prefix-caching`，同一 prompt 发三次）：
+
+        /metrics  prefix_cache_hits_total     0 → 1248
+        /metrics  prompt_tokens_cached_total  1856
+        usage.prompt_tokens_details           null          ← 关键
+
+    缓存真的命中了，但 `Usage.cache_hit_tokens` 拿不到，`billable()` 就算不出折扣。
+
+    **故意不做成请求级自动兜底**：请求前后各抓一次 metrics 求差值，在并发下
+    无法把差值归属到某个具体请求，只能串行化那个窗口 —— 那会让高并发场景
+    的吞吐塌下来，代价远大于收益。
+
+    所以这里只给**累计值**，由调用方自己按时间窗口求增量：
+
+        before = scrape_prefix_cache_tokens(url)
+        ...跑一批请求...
+        after  = scrape_prefix_cache_tokens(url)
+        cached = after - before      # 这批请求的缓存命中总量
+
+    Args:
+        metrics_url: 形如 `http://host:port/metrics`。
+        timeout_s:   抓取超时。抓不到返回 0（观测面 fail-open，不阻断业务）。
+        model_name:  多模型实例时按 `model_name` label 过滤；空 = 全部相加。
+
+    Returns:
+        累计命中 token 数。抓取失败或指标不存在时返回 0。
+    """
+    import urllib.request
+
+    if not str(metrics_url or "").strip():
+        return 0
+    try:
+        with urllib.request.urlopen(str(metrics_url), timeout=timeout_s) as resp:
+            text = resp.read().decode("utf-8", "replace")
+    except Exception:                                          # noqa: BLE001
+        return 0
+    total = 0
+    for line in text.splitlines():
+        if line.startswith("#") or "prompt_tokens_cached_total" not in line:
+            continue
+        # 多实例时按 label 过滤。`metrics_url` 指向单个实例时通常不需要。
+        if model_name and f'model_name="{model_name}"' not in line:
+            continue
+        try:
+            total += int(float(line.rsplit(" ", 1)[-1]))
+        except (ValueError, IndexError):
+            continue
+    return total
+
+
 def _nested_cached_tokens(raw: dict) -> int:
     """从 `prompt_tokens_details` / `input_tokens_details` 里取缓存命中数。
 

@@ -10,6 +10,90 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.7.0] - 2026-11-27
+
+Closes the last two "unverified" items. One produced a number; the other produced
+a negative result with evidence behind it.
+
+### Measured: the full worker scaling curve
+
+A 64-core x86 machine made it possible to test past 8 workers, which the 10-core
+dev box could not.
+
+| workers | RPS | multiple of 1 |
+|---|---|---|
+| 1 | 329 | 1.0x |
+| 2 | 640 | 1.9x |
+| 4 | 1,347 | 4.1x |
+| 8 | 2,967 | 9.0x |
+| 16 | 6,754 | 20.5x |
+| 32 | 16,280 | 49.4x |
+| 48 | 21,106 | 64.1x |
+| 56 | **21,482** | **65.3x** |
+| 64 | 21,351 | 64.9x |
+
+Zero errors throughout. The plateau sits between 48 and 56 workers at roughly
+**21,500 RPS**; at 64 the box only fit 54 workers (system and load generator need
+cores too) so throughput dipped slightly.
+
+Two findings worth keeping:
+
+- **Scaling is superlinear at low counts** (16 workers = 20.5x). A single worker
+  cannot be saturated by the load generator because every request queues on one
+  GIL. More processes is what lets requests actually run in parallel.
+- **Per-core RPS is not portable.** One worker does 329 RPS here and 2,247 RPS on
+  the Apple M5 dev box — a 6.8x gap from CPU, Python version (3.12.3 vs 3.14.3)
+  and container filesystem, not from code. The portable figure is the scaling
+  ratio, not the absolute number.
+
+This also corrects an earlier impression: the "8 workers = 6,911-8,068 RPS"
+figure was the dev box's 10-core ceiling, not the server's. Given cores, the same
+code reaches **21,500 RPS**, 2.7x that number.
+
+### Measured: cache billing on vLLM — a negative result with evidence
+
+The open question was whether `Usage.billable()` produces the right discount
+against a real upstream. Against vLLM 0.32 it cannot, and now we know exactly why.
+
+With `--enable-prefix-caching` and three identical long prompts:
+
+| Observation | Value |
+|---|---|
+| `/metrics` `prefix_cache_hits_total` | 0 -> **1,248** |
+| `/metrics` `prompt_tokens_cached_total` | **1,856** |
+| `usage.prompt_tokens_details` | **null** |
+| `usage.cached_tokens` | absent |
+
+**The cache works. The usage API does not report it.** No amount of parsing fixes
+that, so this is an upstream limitation rather than a bug here.
+
+### Added
+
+`adapters.openai_compat.scrape_prefix_cache_tokens(metrics_url, model_name=...)`
+reads the cumulative counter so callers can take a delta over a window. Verified
+against the live instance:
+
+```
+before 2464 -> after 3072, delta 608
+billable at full price 624 -> 77 with the delta applied   (87.7% saved)
+```
+
+It is deliberately **not** automatic per request. Scraping around each call only
+works serially; under concurrency the delta cannot be attributed to one request
+without serialising the window, which would collapse throughput to save
+accounting precision. Cumulative value plus caller-side deltas keeps both.
+
+Scraping failures return 0 rather than raising: an observability path must not
+become a business dependency.
+
+### Tests
+
+2282, up from 2272. The 10 new ones cover the metric parser (model filtering,
+multi-engine summing, comment lines, garbage lines, fail-open on unreachable) and
+that the discount actually applies once the delta is supplied.
+
+---
+
 ## [0.6.0] - 2026-11-27
 
 Three gaps that were not defects but were not capabilities either. Each is the
@@ -579,6 +663,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.7.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.7.0
 [0.6.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.6.0
 [0.5.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.5.0
 [0.4.1]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.1

@@ -203,6 +203,71 @@ text: api 服务的 p99 指标为 **3120 ms**，超过 1 秒，说明服务劣�
 而是把工具渲染成文本。这次实测证明这条路径在真实模型上可用：
 adapter 收到 `get_metrics(service='api')`，Loop 执行后模型正确引用结果。
 
+### 缓存计价的真实结论：**缓存生效，但 usage 不报**
+
+这是本节最有价值的一条 —— 不是"没测"，是**测了，得到否定结论**。
+
+实验：在 vLLM 0.32 上跑 `Qwen3-VL-Embedding-2B`（标准 attention 架构，
+不是 Mamba 混合），开 `--enable-prefix-caching`，发三次**完全相同**的长 prompt。
+
+结果：
+
+| 观测点 | 值 |
+|---|---|
+| `/metrics` 的 `prefix_cache_hits_total` | 0 → **1,248** |
+| `/metrics` 的 `prompt_tokens_cached_total` | **1,856** |
+| `usage.prompt_tokens_details` | **null** |
+| `usage.cached_tokens` | **不存在** |
+
+**缓存确实命中了（metrics 有硬数字），但 vLLM 完全不通过 usage API 暴露。**
+
+完整的 usage 长这样：
+
+```json
+{"prompt_tokens": 624, "total_tokens": 632, "completion_tokens": 8,
+ "prompt_tokens_details": null, "completion_tokens_details": null}
+```
+
+### 这意味着什么
+
+`Usage.billable()` 的折扣逻辑在 **vLLM 上游无法生效** —— 不是代码写错，
+是上游不给数据。三组上游都验证过：
+
+| 上游 | usage 报缓存？ | metrics 报缓存？ |
+|---|---|---|
+| deepseek-flash（云端网关） | 报 `prompt_cache_hit_tokens` | — |
+| Strata（2×T4） | 不报 | 无此指标 |
+| vLLM 0.32（4090） | **不报（null）** | **报**，但只在聚合指标里 |
+
+**所以 `Usage.billable()` 在云端网关上可用、在 vLLM 上不可用。**
+
+### 兜底方案：从 `/metrics` 读累计值（已实现）
+
+`adapters.openai_compat.scrape_prefix_cache_tokens(metrics_url)` 读 vLLM 的
+`prompt_tokens_cached_total`：
+
+```python
+from adapters.openai_compat import scrape_prefix_cache_tokens
+
+before = scrape_prefix_cache_tokens("http://HOST:PORT/metrics", model_name="vlchat")
+...跑一批请求...
+after  = scrape_prefix_cache_tokens("http://HOST:PORT/metrics", model_name="vlchat")
+cached = after - before          # 这批请求的缓存命中总量
+```
+
+**实测（243 上的真实 vLLM）**：
+
+```
+抓取前 2464 → 抓取后 3072，本次增量 608
+billable 全价 624 → 用增量后 77    ← 省 87.7%
+```
+
+**故意不做成请求级自动兜底**：请求前后各抓一次 metrics 求差值，并发下无法
+归属到具体请求，只能串行化那个窗口 —— 那会把高并发吞吐压垮，代价远大于收益。
+所以只给累计值，由调用方按时间窗口求增量。
+
+抓取失败一律返回 0（fail-open）：观测面不该成为业务的单点。
+
 ### 缓存计价测不了
 
 两次实测 `cached` 恒为 0，Strata 与 vLLM（未开 `--enable-prefix-caching`）
@@ -379,6 +444,54 @@ strip_reasoning=False: '用户问"2+2 等于几？只回答数字。" 需要只�
 
 所以**容量规划要先问"客户端在哪"**。服务端 8,068 RPS 的能力，
 在 28ms RTT 的链路上只能兑现 3,260 —— 这不是代码问题，是要加并发数或拉近距离。
+
+### 完整扩展曲线（64 核机器，容器内 loopback）
+
+本机只有 10 核，测不到 8 worker 以上。用一台 **64 核 x86** 的机器跑服务端
+（第 8 节那台），wrk 同容器 loopback（RTT < 0.1ms），逐档重启服务：
+
+| workers | RPS | 倍数 | 错误 |
+|---|---|---|---|
+| 1 | 329 | 1.0x | 0 |
+| 2 | 640 | 1.9x | 0 |
+| 4 | 1,347 | 4.1x | 0 |
+| 8 | 2,967 | 9.0x | 0 |
+| 16 | 6,754 | 20.5x | 0 |
+| 32 | 16,280 | 49.4x | 0 |
+| 48 | 21,106 | 64.1x | 0 |
+| 56 | **21,482** | **65.3x** | 0 |
+| 64 | 21,351 | 64.9x | 0 |
+
+**平台期在 48-56 worker 之间，约 21,500 RPS。** 64 档只起了 54 个 worker
+（系统进程 + 压测端也要核），吞吐反而略降 —— 这是整机饱和，不是服务端退化。
+
+### 两个反直觉的地方
+
+**① 超线性扩展（16 worker = 20.5x 单 worker）。**
+
+单 worker 只有 329 RPS，8 worker 达到 9x。原因不是"多 worker 有魔法"，
+而是**单 worker 时压测端压不满**：wrk 8 线程对着一个 Python 进程，
+请求全卡在同一个 GIL 上；进程多了，请求才能真并行。
+
+**② 这里的单核数字（329 RPS）和本机（2,247 RPS）差 6.8 倍。**
+
+同一份代码，差异来自环境不是代码：
+
+| | 本机 | 64 核服务器 |
+|---|---|---|
+| CPU | Apple M5 | 服务器 x86 |
+| Python | 3.14.3 | 3.12.3（容器） |
+| 文件系统 | APFS | overlayfs（容器） |
+| 单核 RPS | 2,247 | 329 |
+
+**所以"每 worker 多少 RPS"这个数字不能跨机器引用**，能跨机器引用的是
+**扩展比**：多 worker 接近线性，直到整机饱和。
+
+### 这解决了之前的一个疑问
+
+早先记录"8 worker = 6,911-8,068 RPS"，那是**本机 10 核的上限**，不是服务端上限。
+本机压测端和服务端抢同一批核，测不出更高。这次用 64 核验证：
+**同等条件下能到 21,500 RPS**，是之前记录的 2.7 倍。
 
 ### 这个数字的适用边界
 
