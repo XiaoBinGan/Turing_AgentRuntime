@@ -138,6 +138,21 @@ def estimate_tokens(text: str) -> int:
     return max(1, int(cjk + other / 3.5))
 
 
+def _nested_cached_tokens(raw: dict) -> int:
+    """从 `prompt_tokens_details` / `input_tokens_details` 里取缓存命中数。
+
+    两种嵌套键都认：OpenAI 用 `prompt_tokens_details`，Responses API 用
+    `input_tokens_details`，都是 `{"cached_tokens": N}` 结构。
+    """
+    for key in ("prompt_tokens_details", "input_tokens_details"):
+        details = raw.get(key)
+        if isinstance(details, dict):
+            v = _as_int(details.get("cached_tokens"))
+            if v:
+                return v
+    return 0
+
+
 def _as_int(value: Any) -> int:
     """usage 字段可能是 int / float / 字符串，统一收口成非负 int。"""
     if isinstance(value, bool):
@@ -621,9 +636,14 @@ class OpenAICompatAdapter:
             input_tokens = _as_int(raw.get("prompt_tokens") or raw.get("input_tokens"))
             output_tokens = _as_int(raw.get("completion_tokens") or raw.get("output_tokens"))
             cache_tokens = _as_int(
-                raw.get("prompt_cache_hit_tokens")
-                or raw.get("cached_tokens")
-                or raw.get("cache_read_input_tokens"))
+                raw.get("prompt_cache_hit_tokens")          # DeepSeek 风格（顶层）
+                or raw.get("cached_tokens")                 # 少数实现直接放顶层
+                or raw.get("cache_read_input_tokens")       # Anthropic 风格
+                # **OpenAI 官方把缓存放在嵌套字段里**：
+                #   "prompt_tokens_details": {"cached_tokens": 1920}
+                # 早先只读顶层，于是标准格式被当成"没命中"→ 按全价计费。
+                # 这是**静默算错钱**，不是崩溃，所以容易一直没发现。
+                or _nested_cached_tokens(raw))
 
         if input_tokens or output_tokens:
             self.last_estimated = False

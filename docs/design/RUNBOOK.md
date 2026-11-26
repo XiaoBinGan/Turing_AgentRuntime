@@ -348,6 +348,113 @@ AGENT_RUNTIME_REDIS_PORT=6379
 
 ---
 
+## 13. 模型输出里混进思维链
+
+### 症状
+
+回合 `text` 长这样，而不是答案：
+
+```
+用户问"2+2等于几？只回答数字。" 需要只回答数字。答案是4。
+```
+
+用户看到的是模型的内心独白。更麻烦的是它被写进 `history`，**下一轮模型
+会看到自己上一轮的思维链当前文**，判断开始漂。
+
+### 确认
+
+```bash
+# 1. 看是不是推理模型
+curl -s $UPSTREAM/v1/models | jq '.data[].id'
+
+# 2. 直接打一次，看 content 结构
+curl -s $UPSTREAM/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"MODEL","messages":[{"role":"user","content":"2+2=?"}],"max_tokens":100}' \
+  | jq -r '.choices[0].message.content'
+```
+
+如果输出里有 `</think>`、`</thinking>` 之类的标记 → 是推理模型。
+
+### 动作
+
+**默认已经处理了**（`OpenAICompatAdapter(strip_reasoning=True)`）。
+如果看到思维链，说明有人关掉了它，或者响应里有不认识的标记格式：
+
+```bash
+# 检查是否被显式关闭
+grep -rn "strip_reasoning" /path/to/your/wiring.py
+```
+
+不在已知标记列表里的（自定义模型可能用别的），需要加进
+`_REASONING_MARKERS`。
+
+### 不要做
+
+- **不要**把 `strip_reasoning` 关掉来"看完整输出"。要看完整输出用日志，
+  不要让它进 `history` —— 一旦进了，后续几轮的判断都会被污染。
+- **不要**指望上游的 `message["reasoning"]` 字段。实测 vLLM 0.32 在没配
+  `--reasoning-parser` 时该字段是 `null`，思维链**只在 content 里**。
+
+---
+
+## 14. 上游能对话但工具调用永远不触发
+
+### 症状
+
+`/v1/turns` 返回 200，模型回复看起来正常（甚至在说"我要调用 xxx"），
+但 `observations` 是空的，工具一次都没执行。
+
+### 确认
+
+直接打上游，看 `finish_reason`：
+
+```bash
+curl -s $UPSTREAM/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model":"MODEL",
+  "messages":[{"role":"user","content":"查一下 api 的 p99"}],
+  "tools":[{"type":"function","function":{"name":"get_metrics",
+    "parameters":{"type":"object","properties":{"service":{"type":"string"}}}}}]
+}' | jq '{finish: .choices[0].finish_reason, tc: .choices[0].message.tool_calls}'
+```
+
+| 返回 | 含义 |
+|---|---|
+| `400 requires --enable-auto-tool-choice` | vLLM 缺启动参数 |
+| `200` + `finish:"stop"` + `tool_calls:null` | **parser 与模型模板不匹配** |
+| `200` + `finish:"tool_calls"` | 上游正常，问题在本层 |
+
+### 动作
+
+vLLM 需要两个参数，**第二个错了不会报错，只是永不产出 tool_calls**：
+
+```bash
+--enable-auto-tool-choice --tool-call-parser <parser>
+```
+
+parser 按模型的 chat template 选：
+
+| 模型模板里的标记 | parser |
+|---|---|
+| `<tool_call><function=NAME>` | **`qwen3_xml`** |
+| `{"name":...,"arguments":...}` JSON | `hermes` |
+| `<|python_tag|>` | `llama3_json` |
+
+查模板：
+
+```bash
+docker exec CONTAINER grep -oE "<tool_call>|<\|python_tag\|>|function=" \
+  /model/chat_template.jinja | sort -u
+```
+
+### 不要做
+
+- **不要**把这当成"模型不支持 function calling"。实测用错 parser 时
+  Qwen3.8-27B 会先输出思考（"Let's use the get_metrics function"）然后
+  **在 `</think>` 处停止**，`finish_reason` 是 `stop` —— 完全像是模型能力问题。
+- **不要**只验证"能对话"就认为接好了。必须验证 `finish_reason == "tool_calls"`。
+
+---
+
 ## 待补的观测能力
 
 以下三项目前**没有指标**，所以没有对应告警。补 metric 是让它们可运维的前提：

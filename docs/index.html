@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Turing Agent Runtime — 生产形态的 LLM Agent 运行时</title>
-<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。151 模块 / 7.6 万行 / 2232 用例全绿。">
+<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。152 模块 / 7.6 万行 / 2240 用例全绿。">
 <meta property="og:title" content="Turing Agent Runtime">
 <meta property="og:description" content="生产形态的 LLM Agent 运行时。运行时拥有形状，应用拥有内容。">
 <meta property="og:type" content="website">
@@ -162,9 +162,9 @@ footer a{color:var(--fg2)}
       <a class="btn" href="#start">快速开始</a>
     </div>
     <div class="stats">
-      <div class="stat"><div class="n">151</div><div class="l">模块</div></div>
+      <div class="stat"><div class="n">152</div><div class="l">模块</div></div>
       <div class="stat"><div class="n">76k</div><div class="l">行代码</div></div>
-      <div class="stat"><div class="n">2232</div><div class="l">测试用例</div></div>
+      <div class="stat"><div class="n">2240</div><div class="l">测试用例</div></div>
       <div class="stat"><div class="n">11</div><div class="l">端到端场景</div></div>
       <div class="stat"><div class="n">15</div><div class="l">冻结契约</div></div>
     </div>
@@ -291,14 +291,14 @@ footer a{color:var(--fg2)}
     </p>
     <figure style="margin-bottom:32px">
       <img src="assets/verification-gates.png" alt="门禁：编译、测试、契约、文档事实、场景、HTTP" loading="lazy">
-      <figcaption><code>./verify.sh</code> 的六道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到八道</figcaption>
+      <figcaption><code>./verify.sh</code> 的七道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到八道</figcaption>
     </figure>
     <div class="grid g2">
       <div class="card">
         <h3>已验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>单元 + 集成</td><td><span class="tag ok">2232 通过</span></td></tr>
+            <tr><td>单元 + 集成</td><td><span class="tag ok">2240 通过</span></td></tr>
             <tr><td>端到端场景</td><td><span class="tag ok">11 / 80 断言</span></td></tr>
             <tr><td>重复跑稳定性</td><td><span class="tag ok">连跑 5 次</span></td></tr>
             <tr><td>并发</td><td><span class="tag ok">100 线程零异常</span></td></tr>
@@ -315,7 +315,9 @@ footer a{color:var(--fg2)}
             <tr><td>值班手册</td><td><span class="tag ok">9 类告警处置</span></td></tr>
             <tr><td>故障演练</td><td><span class="tag ok">6 项姿态验证</span></td></tr>
             <tr><td>长稳压测</td><td><span class="tag ok">20min ×2 / 13.7 万请求 / p99 105ms</span></td></tr>
-            <tr><td>真实 LLM 延迟</td><td><span class="tag ok">云端 p50 2.7s / 本地 T4 p50 4.3s</span></td></tr>
+            <tr><td>真实 LLM 延迟</td><td><span class="tag ok">三组上游：云端 2.7s / T4 4.3s / 4090 27B 4.7s</span></td></tr>
+            <tr><td>推理模型思维链</td><td><span class="tag ok">默认剥离，9 个用例覆盖</span></td></tr>
+            <tr><td>工具调用兼容</td><td><span class="tag ok">qwen3_xml / hermes / OpenAI 三种缓存字段</span></td></tr>
             <tr><td>真实 Embedding + Rerank</td><td><span class="tag ok">2B vLLM，两步检索纠正排序</span></td></tr>
             <tr><td>会话跨副本</td><td><span class="tag ok">STORE=redis，turn_index 连续</span></td></tr>
             <tr><td>多 worker 扩展</td><td><span class="tag ok">4 worker 2.97× / 8 worker 3.59×</span></td></tr>
@@ -328,7 +330,7 @@ footer a{color:var(--fg2)}
         <table style="margin-top:12px">
           <tbody>
             <tr><td>8 worker 曲线</td><td><span class="tag part">需第二台机器</span></td></tr>
-            <tr><td>sqlite 写入争用</td><td><span class="tag no">未量化</span></td></tr>
+            <tr><td>缓存计价真实验证</td><td><span class="tag part">三组上游都不报 cache hit</span></td></tr>
             <tr><td>长稳 &gt; 20 分钟</td><td><span class="tag part">数小时级未跑</span></td></tr>
           </tbody>
         </table>

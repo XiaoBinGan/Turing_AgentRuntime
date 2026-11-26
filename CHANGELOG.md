@@ -10,6 +10,43 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.4.1] - 2026-11-26
+
+Documentation and gates only; no code changes outside the fact checker.
+
+### Fixed
+
+- **README claimed sqlite write contention was unquantified** when
+  `scripts/bench_sqlite.py` had already measured it: multi-process writes to a
+  single file reach 3.07x with zero failures. Moved to the verified table with
+  the actual conclusion — the case for Redis is fault domain, not throughput.
+- **README and the site both said six verification gates.** There are seven;
+  the count has been wrong since gate 3c (config defaults) was added. Two
+  documents repeating the same stale number is why nobody caught it.
+- **The site contradicted itself**, saying both six and seven gates in
+  different places.
+
+### Added
+
+- `check_readme_facts.py` now derives the gate count from `verify.sh` itself and
+  compares it against both documents, accepting Arabic and Chinese numerals
+  because the site uses the latter. Verified by deliberately breaking the site
+  text and watching the gate fail. The facts check is now eight assertions.
+- **RUNBOOK sections 13 and 14**, both from failures encountered this week:
+  reasoning chains leaking into turn text, and an upstream that answers 200 and
+  appears to reason but never emits a tool call. Each states what not to do,
+  since in both cases the tempting fix makes it worse — deleting reasoning from
+  history matters more than displaying it, and "the model cannot call tools" is
+  the wrong conclusion when the parser is simply mismatched.
+- **DEPLOY.md section on local inference backends**, covering the three checks
+  that all fail silently: enabling tool choice and picking the right parser for
+  the model's template, reasoning stripping being on by default, and
+  `--gpu-memory-utilization` budgeting weights plus KV cache rather than weights
+  alone (0.99 fails, 0.95 loads but leaves no cache, 0.88 works on a 48GB card
+  holding a 25.22 GiB model).
+
+---
+
 ## [0.4.0] - 2026-11-26
 
 ### Added
@@ -406,6 +443,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.4.1]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.1
 [0.4.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.4.0
 [0.3.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.3.0
 [0.2.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.2.0

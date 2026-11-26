@@ -100,6 +100,31 @@ def main() -> int:
                            claimed == assertions,
                            f"README 写 {claimed}，实际 {assertions}"))
 
+    # ── 门禁道数：文档说的数必须等于 verify.sh 实际跑的 ──
+    # 这一类是"功能加了但文档没跟上"的典型。③c 加进来之后，README 与官网
+    # 都还写着 6 道 —— 两个文件互相抄，谁也发现不了。
+    try:
+        vy = (ROOT / "verify.sh").read_text(encoding="utf-8")
+        head = vy.split("# ⑥ 可选")[0]          # 不含 VERIFY_* 条件块
+        actual_gates = len(set(re.findall(r"[①②③④⑤⑥⑦⑧⑨][a-z]?", head)))
+        for doc in ("README.md", "docs/index.html"):
+            try:
+                txt = (ROOT / doc).read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            # 文档里既有阿拉伯数字也有中文数字，两种都要认
+            claim_7 = len(re.findall(r"(?:7 gates|7 道门禁|七道门禁)", txt))
+            claim_6 = len(re.findall(r"(?:6 gates|6 道门禁|六道门禁)", txt))
+            claimed = 6 if (claim_6 and not claim_7) else (7 if claim_7 else None)
+            if claimed is None:
+                continue
+            checks.append((f"门禁道数 {doc} 写 {claimed} == 实际 {actual_gates}",
+                           claimed == actual_gates,
+                           f"{doc} 写 {claimed} 道，verify.sh 实际 {actual_gates} 道"
+                           f"（编号 ①②③③b③c④⑤ 各算一道）"))
+    except FileNotFoundError:
+        pass
+
     # 版本一致性：pyproject.toml 与 CHANGELOG 最新条目必须同号。
     # 两者不同步时，`pip install` 拿到的版本与 changelog 讲的对不上，
     # 用户会以为是发行事故。

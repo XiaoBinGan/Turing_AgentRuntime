@@ -244,6 +244,66 @@ AGENT_RUNTIME_AUTH=off .venv/bin/python serve.py     # 显式裸奔，仅限本�
 | `OPENAI_TEMPERATURE` | 否 | adapter 默认 | 采样温度 | 非数字 → 被静默忽略（不报错），你以为设了 |
 | `OPENAI_PRICE_IN_PER_M` / `OPENAI_PRICE_OUT_PER_M` | 否 | 0 | 成本核算单价（每百万 token，入/出分开） | 不配 → `budget.cost_total_usd` 恒为 0，**成本预算永不触发**，超支无告警；配成「每千 token」的价 → 成本放大 1000 倍，预算瞬间打满 |
 
+### 接本地推理模型（vLLM / Strata / llama.cpp）时的三个必查项
+
+这三条都是实测踩出来的，**共同点是失败时不报错**。
+
+#### ① vLLM 必须显式开工具调用，且 parser 要对
+
+```bash
+vllm serve /path/to/model \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_xml      # 按模型模板选，不是随便填
+```
+
+| 缺什么 | 表现 |
+|---|---|
+| 缺 `--enable-auto-tool-choice` | 传 `tools` 直接 **400** |
+| parser 与模板不匹配 | **200**，`finish_reason` 是 `stop`，`tool_calls` 是 `null` |
+
+第二种最坑：接口通、能对话、模型甚至说"我要调用 get_metrics"，但一个工具都不会执行。
+
+parser 选择：
+
+| 模型模板标记 | parser |
+|---|---|
+| `<tool_call><function=NAME>` | `qwen3_xml` |
+| JSON 风格 `{"name":...}` | `hermes` |
+| `<\|python_tag\|>` | `llama3_json` |
+
+**验收标准**：`finish_reason == "tool_calls"`，不是"能聊天"。
+
+#### ② 推理模型的思维链默认会被剥掉
+
+`OpenAICompatAdapter(strip_reasoning=True)` 是默认值。它剥离
+`</think>` / `</thinking>` / `[/THINK]` 之前的内容。
+
+为什么需要：vLLM 在没配 `--reasoning-parser` 时，`message["reasoning"]` 是
+**null**，思维链全在 `content` 里。不剥的话它会进 `history`，下一轮模型
+看到自己的独白当前文，判断开始漂。
+
+关掉它有代价，只在调试时用：
+
+```python
+OpenAICompatAdapter(..., strip_reasoning=False)   # 调试用，不要进生产
+```
+
+#### ③ 显存要留够 KV cache，不只是权重
+
+`--gpu-memory-utilization` 是**总量**（权重 + KV），不是权重占比。
+
+实测 27B 4bit（权重 25.22 GiB）在 48GB 卡上：
+
+| util | 结果 |
+|---|---|
+| 0.99 | `Free memory less than desired utilization`（超过物理可用） |
+| 0.95 | 能加载，`No available memory for the cache blocks` |
+| **0.88** | 正常（留约 6 GiB 给 KV） |
+
+**别照抄别人的 util 值** —— 它取决于卡上还跑了什么。先 `nvidia-smi` 看实际空闲。
+
+
+
 > **前缀规则**：不是固定的 `OPENAI_*`。`adapters/openai_compat.from_env(prefix)` 读
 > `{PREFIX}_BASE_URL` / `{PREFIX}_API_KEY` / `{PREFIX}_MODEL` 等。
 > 但 `serve.py` 的 `build_gateway_from_env` **硬编码了 `from_env("OPENAI")`** ——

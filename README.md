@@ -27,7 +27,7 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **151 modules, 76k lines, 2232
+answer that survived contact with a test suite: **152 modules, 76k lines, 2240
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
@@ -179,8 +179,8 @@ the MCP SDK).
 Run the full verification:
 
 ```bash
-./verify.sh                    # 6 gates: compile, tests, contracts, docs-facts, scenarios, HTTP
-VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 gates, needs live services
+./verify.sh                    # 7 gates: compile, tests, contracts, docs-facts, config-defaults, scenarios, HTTP
+VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 gates, needs live services
 ```
 
 Start the HTTP service:
@@ -199,7 +199,7 @@ curl -X POST localhost:8000/v1/turns \
 
 Verified by the suite:
 
-- 2232 unit and integration tests, stable across repeated full runs
+- 2240 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - Concurrency: 100 threads against one gateway, 8 threads x 5 turns, 60 mixed
   workflow requests, zero exceptions
@@ -229,6 +229,7 @@ Also measured:
 | Real-LLM latency | Two upstreams measured: deepseek-flash p50 2672ms, and a local Strata engine on 2xT4 at p50 4266ms. A 4-6 step turn is 11-26s end to end. Also ran a full turn against the local engine to confirm the text-rendered tool descriptions produce valid `tool_calls` | `scripts/real_llm_capacity.py` |
 | Multi-worker | Requests do distribute across 4 workers, but throughput does not rise — the load generator saturates first | `AGENT_RUNTIME_WORKERS` |
 | Cross-replica sessions | Works via `AGENT_RUNTIME_STORE=redis`: turn_index stays continuous across replicas | `_make_store()` |
+| sqlite write contention | Multi-process writes to one file scale to 3.07x with zero failures; the case for Redis is fault domain, not throughput | `scripts/bench_sqlite.py` |
 
 What is still open:
 
@@ -237,8 +238,8 @@ What is still open:
   same setup tops out at 3,260 RPS with server CPU at only 271% — the requests
   are in flight, not being processed. Capacity planning has to start from where
   the clients are.
-- **sqlite write contention** under concurrent load is not quantified.
-- **Soak ran 20 minutes**, not hours.
+- **Soak ran 20 minutes**, not hours. Slow leaks over a longer window would not
+  show.
 
 Details, including a wrong conclusion I had to retract, are in
 `docs/design/CAPACITY.md`.
@@ -276,7 +277,7 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**151 个模块、7.6 万行、2232 个用例、11 个端到端场景**，
+测试套件的检验：**152 个模块、7.6 万行、2240 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
@@ -365,13 +366,13 @@ jsonschema、redis、qdrant、pymilvus、OpenTelemetry、MCP SDK）。
 完整验收：
 
 ```bash
-./verify.sh                    # 6 道门禁：编译、测试、契约、文档事实、场景、HTTP
-VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
+./verify.sh                    # 7 道门禁：编译、测试、契约、文档事实、配置默认、场景、HTTP
+VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 道，需要真服务
 ```
 
 ## 已验证与未验证
 
-**已验证**：2232 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
+**已验证**：2240 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
 零异常；900 回合内存增长 3KB；并发下限流精确（40 并发 limit 10 恰好 10 通过）；
 真模型 4-6 步收敛；真 Milvus 集群、真 Langfuse 投递、真 OTLP；优雅关闭顺序、
 检查点崩溃恢复、workflow 持久化。
@@ -396,14 +397,14 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 | 真实 LLM 延迟 | 两组上游：deepseek-flash p50 2672ms；本地 Strata（2×T4）p50 4266ms。4-6 步回合端到端 11-26 秒。另跑了完整回合验证「文本渲染的工具描述能被模型正确转成 tool_calls」 | `scripts/real_llm_capacity.py` |
 | 多 worker | **4 worker 提升 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%），8 worker 3.59×。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
 | 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
+| sqlite 写入争用 | 多进程写同一文件 3.07×、零失败；选 Redis 的理由是故障域不是吞吐 | `scripts/bench_sqlite.py` |
 
 **仍然开放的**：
 
 - **网络 RTT 会封顶吞吐，这一条已实测**：同机 8 worker 到 6,911-8,068 RPS；
   换一台机器经 28ms 链路打过来，同样配置只有 3,260 RPS，且服务端 CPU 仅 271%
   —— 请求在路上，不在处理。容量规划要先问"客户端在哪"。
-- **sqlite 写入争用**未量化。
-- **长稳只跑了 20 分钟**，不是数小时。
+- **长稳只跑了 20 分钟**，不是数小时。更慢的泄漏测不出来。
 
 细节（含一个我不得不撤回的错误结论）见 `docs/design/CAPACITY.md`。
 
