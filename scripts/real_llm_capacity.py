@@ -76,6 +76,8 @@ def main() -> int:
     ap.add_argument("--model", default=os.environ.get("BABEL_MODEL", "deepseek-flash"))
     ap.add_argument("--calls", type=int, default=20, help="总调用次数")
     ap.add_argument("--concurrency", type=int, default=4)
+    ap.add_argument("--warmup", type=int, default=2,
+                    help="前 N 次调用不计入统计（冷启动：模型/kv cache 未热）")
     ap.add_argument("--json-out", default="")
     a = ap.parse_args()
 
@@ -103,7 +105,15 @@ def main() -> int:
                   f"cached={r['usage'].get('cached',0)}")
     wall = time.perf_counter() - t_all
 
-    ok = [r for r in results if r["status"] == 200]
+    ok_all = [r for r in results if r["status"] == 200]
+    # **剔除冷启动**：实测 qwen3.8-flash-next 前 2 次 25-40 秒，稳定后 1.4-2.1 秒。
+    # 不剔除的话 p50 会被拖到 16 秒，结论完全错 —— 而"首次请求慢"是模型加载
+    # 权重与构建 KV cache 的一次性成本，不是服务能力。
+    warm = max(0, int(a.warmup))
+    ok = ok_all[warm:] if len(ok_all) > warm else ok_all
+    if warm and len(ok_all) > warm:
+        cold = [r["ms"] for r in ok_all[:warm]]
+        print(f"  （已剔除前 {warm} 次冷启动：{[round(x) for x in cold]} ms）")
     lat = [r["ms"] for r in ok]
     if not lat:
         print("\n  全部失败，无法给出容量结论。")
@@ -118,6 +128,7 @@ def main() -> int:
     res = {
         "base": base, "model": a.model,
         "calls": len(results), "ok": len(ok),
+        "warmup_dropped": min(warm, len(ok_all)),
         "wall_s": round(wall, 2),
         "rps": round(len(ok) / wall, 2) if wall else 0,
         "latency_ms": {

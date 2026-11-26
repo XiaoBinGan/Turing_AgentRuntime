@@ -226,7 +226,7 @@ Also measured:
 | Capability | Result | Script |
 |---|---|---|
 | Soak, 20 minutes (2 runs) | 121k and 137k requests, 100% success, p99 105-167ms, threads and file handles flat, steady-state RSS 85MB, peak 238MB, returns to 6MB after load stops | `scripts/soak_test.py` |
-| Real-LLM latency | deepseek-flash p50 2672ms, p99 3805ms; a 4-6 step turn is 11-16s end to end | `scripts/real_llm_capacity.py` |
+| Real-LLM latency | Two upstreams measured: deepseek-flash p50 2672ms, and a local Strata engine on 2xT4 at p50 4266ms. A 4-6 step turn is 11-26s end to end. Also ran a full turn against the local engine to confirm the text-rendered tool descriptions produce valid `tool_calls` | `scripts/real_llm_capacity.py` |
 | Multi-worker | Requests do distribute across 4 workers, but throughput does not rise — the load generator saturates first | `AGENT_RUNTIME_WORKERS` |
 | Cross-replica sessions | Works via `AGENT_RUNTIME_STORE=redis`: turn_index stays continuous across replicas | `_make_store()` |
 
@@ -393,7 +393,7 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 7 道，需要真服务
 | 能力 | 结果 | 脚本 |
 |---|---|---|
 | 长稳 20 分钟（两轮） | 12.1 万 / 13.7 万请求、100% 成功、p99 105-167ms、线程与句柄恒定、稳态 85MB、峰值 238MB、停止负载后回落到 6MB | `scripts/soak_test.py` |
-| 真实 LLM 延迟 | deepseek-flash p50 2672ms、p99 3805ms；4-6 步的回合端到端 11-16 秒 | `scripts/real_llm_capacity.py` |
+| 真实 LLM 延迟 | 两组上游：deepseek-flash p50 2672ms；本地 Strata（2×T4）p50 4266ms。4-6 步回合端到端 11-26 秒。另跑了完整回合验证「文本渲染的工具描述能被模型正确转成 tool_calls」 | `scripts/real_llm_capacity.py` |
 | 多 worker | **4 worker 提升 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%），8 worker 3.59×。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
 | 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
 

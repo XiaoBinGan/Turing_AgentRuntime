@@ -164,6 +164,51 @@ RSS 呈**锯齿形**：在 30MB 与 162MB 之间摆动，20 分钟内有 5 个�
 缓存命中率 0% 是因为测试每次发新 prompt 且无共享前缀。真实多轮场景里
 system prompt 固定，命中率会高得多 —— 那正是 `Usage.billable()` 存在的理由。
 
+## 第二组上游：Strata 本地引擎（2×T4）
+
+第一组是 deepseek-flash（云端网关）。另一组是**本地部署**：Strata 引擎跑
+`qwen3.8-flash-next-q2_0`（Q2 量化，32K 上下文，支持图文），硬件 2×Tesla T4。
+
+`scripts/real_llm_capacity.py --calls 10 --concurrency 1 --warmup 2`：
+
+| 指标 | 值 |
+|---|---|
+| 单次延迟（剔除冷启动） | p50 **4,266ms**，p95 5,720ms，p99 5,934ms |
+| 抖动 | stdev 691ms（p50 的 16%） |
+| 输出速度 | 约 20 tok/s（120 token 输出） |
+| 推算回合（4-6 步） | p50 **17.1 ~ 25.6 秒** |
+| 缓存命中 | **恒为 0**（该引擎不报 `prompt_cache_hit_tokens`） |
+
+### 冷启动必须剔除
+
+前两次调用 **13.8 秒 / 8.4 秒**，稳定后 1.4-2.1 秒（短输出场景）。
+不剔除的话 p50 被拖到 **16.7 秒**，结论差 4 倍。
+
+所以脚本加了 `--warmup N`：前 N 次不计入统计。理由：首次请求包含权重加载与
+KV cache 构建，是**一次性成本**，不是服务能力。任何压测都要区分这两者。
+
+### 端到端回合验证
+
+用我这套运行时接 Strata 跑了一个真实回合（2 步，42 秒）：
+
+```
+phase=DONE  term=DONE  steps=2
+工具调用: [('get_metrics', 'ok')]
+text: api 服务的 p99 指标为 **3120 ms**，超过 1 秒，说明服务劣化。
+      error_rate: 0.021 / qps: 1450
+```
+
+**关键点：模型正确地把我的纯文本工具描述转成了 `tool_calls`** ——
+本仓不用原生 `assistant.tool_calls` 协议（见 STATUS.md 的取舍说明），
+而是把工具渲染成文本。这次实测证明这条路径在真实模型上可用：
+adapter 收到 `get_metrics(service='api')`，Loop 执行后模型正确引用结果。
+
+### 缓存计价测不了
+
+两次实测 `cached` 恒为 0，Strata 与 vLLM（未开 `--enable-prefix-caching`）
+都不报这个字段。所以 **`Usage.billable()` 的缓存折扣逻辑只被单元测试覆盖，
+没有真实上游数据验证**。这一条如实记在这里，不假装验过。
+
 ## 多 worker（`AGENT_RUNTIME_WORKERS`）
 
 `scripts/bench_multiworker.sh`，wrk 4.2.0，每档 20 秒 × 2 轮取均值。
