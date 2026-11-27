@@ -610,15 +610,20 @@ class TestPolicyPack(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════
-# ⑦ 既有 42 个 governance 用例必须继续全绿
+# ⑦ 既有 governance 用例必须继续全绿（数量随新增用例上调）
 # ══════════════════════════════════════════════════════════════
 class TestGovernanceSuiteStillGreen(unittest.TestCase):
     def test_34_governance_suite_42_green(self):
-        """把 tests.test_governance 整批跑一遍：42 个用例、零失败、零错误。"""
+        """把 tests.test_governance 整批跑一遍：45 个用例、零失败、零错误。
+
+        数字从 42 上调到 45，是因为补了配额 fail-closed 那三条（15b/15c/15d）。
+        这条门禁的价值不在数字本身，而在"整批必须零失败"—— 数字跟着涨即可，
+        但**不许**为了让它绿而删掉新增用例。
+        """
         suite = unittest.TestLoader().loadTestsFromName("tests.test_governance")
         stream = io.StringIO()
         result = unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
 
         self.assertEqual([], list(result.failures), stream.getvalue())
         self.assertEqual([], list(result.errors), stream.getvalue())
-        self.assertEqual(result.testsRun, 42)
+        self.assertEqual(result.testsRun, 45)

@@ -307,6 +307,39 @@ class TestRBAC(unittest.TestCase):
 # QuotaGuard
 # ══════════════════════════════════════════════════════════════
 class TestQuotaGuard(unittest.TestCase):
+    def test_15b_unparsable_limit_is_fail_closed(self):
+        """配置写坏（`'100/min'` / `'not-a-number'`）→ **全拦**，不是全放行。
+
+        真实事故形态：`AGENT_RUNTIME_QUOTA_TOOL_CALL='100/min'` 这种"看起来更像人话"
+        的写法让 `int()` 失败，`_limit_of` 退回 0，而 `charge()` 把 0 读成
+        "关闭这一档"（与 `RATE_LIMIT=0` 同口径）—— 于是配错一行等于**关掉配额**，
+        且没有任何信号。两条注释在这里互相矛盾，压测前不会有人发现。
+        """
+        for bad in ("100/min", "not-a-number", "1e3", None, [1]):
+            q = QuotaGuard(per_minute={"tool_call": bad})
+            v = q.charge("acme", "tool_call")
+            self.assertFalse(v.allowed, f"配坏 {bad!r} 竟然放行")
+            self.assertIn("fail-closed", v.reason)
+            self.assertFalse(v.payload and v.payload.get("unlimited"),
+                             "坏配置不能被当成 unlimited")
+
+    def test_15d_float_limit_truncates(self):
+        """`3.7` 是**可解析**的（截断成 3），不是"坏配置" —— 别把截断当故障。
+
+        写死这条是因为它容易被顺手并进上一条：`int(3.7)` 成功，语义是"上限 3"，
+        与 fail-closed 无关。把它混进来会让"配错就是全拦"这条断言失去意义。
+        """
+        q = QuotaGuard(per_minute={"tool_call": 3.7})
+        self.assertTrue(q.charge("acme", "tool_call").allowed)
+        self.assertEqual(q._limit_of("tool_call"), 3)   # noqa: SLF001
+
+    def test_15c_explicit_zero_still_means_off(self):
+        """显式 0 的口径**不变**：关闭这一档（不是"一个都不许"）。"""
+        q = QuotaGuard(per_minute={"tool_call": 0})
+        v = q.charge("acme", "tool_call")
+        self.assertTrue(v.allowed)
+        self.assertTrue(v.payload.get("unlimited"))
+
     def test_16_exceed_blocks(self):
         """超限 → block，payload 带 retry_after。"""
         clock = FakeClock()

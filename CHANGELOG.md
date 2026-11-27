@@ -246,6 +246,55 @@ Two test cases had been encoding that host state instead of isolating it:
 now, and the suite is green on a machine with the Docker CLI installed and no
 daemon running — the configuration that made the gate red.
 
+
+### Four reported defects, four reproductions
+
+Four defects reported from downstream, all four reproduced before being
+believed, all four fixed here.
+
+**Bad quota config fails open.** `AGENT_RUNTIME_QUOTA_TOOL_CALL='100/min'` — a
+plausible-looking value — makes `int()` fail, `_limit_of()` returns 0, and
+`charge()` reads 0 as "this tier is off" (the `RATE_LIMIT=0` convention). A
+typo therefore disables the quota entirely, silently. `QuotaGuard(per_minute=
+{"tool_call": "not-a-number"}).charge("t", "tool_call")` returned
+`allowed=True, unlimited=True`. Two comments contradicted each other: the one in
+`_limit_of` says "bad config → 0 → block everything", the one in `charge()` says
+"`limit <= 0` → unlimited". Parsing failure and an explicit 0 are now separate
+values; explicit 0 keeps its meaning.
+
+**Five credential keys were logged in plaintext.** `_MANDATORY_REDACT` held
+`apikey` / `authorization` / `password` only, so `access_token`,
+`refresh_token`, `session_token`, `client_secret` and `private_key` went to the
+log sink verbatim — one `log.info("oauth.exchange", ...)` is enough to hand a
+refresh token to the log collector. All five are now in the mandatory floor.
+Bare `token` is deliberately still excluded: it collides with
+`input_tokens`/`total_tokens`, and redacting those would blind the metrics.
+
+**`Replayer` and `ContextHandle.replay()` disagreed on budget.** Two
+divergences, both silent: the patch log may carry the nested form
+(`{"token": {"total": …, "used": …}}`) while Context stores the flat form, and
+Context rebuilds the block through a `Budget` object, so missing fields come
+back as defaults (`max_steps=8`, `token_total=20000`). Flattening the keys alone
+was not enough — the flattened dict still lacked the defaults, which is exactly
+the "looks equivalent" failure INV-16b exists to prevent. `plane/` may not
+import `core/`, so the semantics are mirrored rather than shared; four patch
+shapes (nested set, flat set, nested merge, field-then-block) are compared
+against `ContextHandle` in a test.
+
+**One test read source through `linecache`.** `tests/test_spi_contracts.py`
+parsed `inspect.getsource(PlannerProtocol)`, which resolves through
+`linecache`; with the suite's reload-and-subprocess patterns a stale cache
+yields a truncated slice and `ast.parse` raises
+`SyntaxError: invalid character '：'`. Reproduced by poisoning the cache: the
+same call raises immediately. The test now reads `contracts.py` from disk and
+finds the class by name — deterministic by construction.
+
+Verification: 2,329 tests green on both machines (MacBook Python 3.14 /
+243 Python 3.13). Negative controls: reverting each of the four turns its
+regression case red (quota 1, redaction 1, replay 4 subtests, gate count 1). A
+gate pin (`test_gate.py`) moved from 42 to 45 governance cases; the number is
+allowed to grow, the "zero failures" requirement is not relaxed.
+
 ---
 
 ## [0.7.1] - 2026-11-27

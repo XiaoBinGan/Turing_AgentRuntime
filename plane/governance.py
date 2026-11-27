@@ -615,11 +615,26 @@ class QuotaGuard:
         self._denied_total = 0
 
     # ── 内部 ────────────────────────────────────────────────
-    def _limit_of(self, kind: str) -> int:
+    def _limit_of(self, kind: str) -> int | None:
+        """解析这一档的上限。**返回 None = 配置坏了（调用方必须 block）**。
+
+        这里必须区分三种情况，早先混成了两种：
+
+          显式 0        → 关闭这一档（unlimited，与 `AGENT_RUNTIME_RATE_LIMIT=0` 同口径）
+          正整数        → 正常上限
+          **解析失败**  → None（fail-closed）
+
+        早先解析失败也返回 0，而 `charge()` 里 `limit <= 0` 的语义是"关闭这一档"，
+        于是**配置写坏会让配额完全失效且没有任何信号**：
+        `QuotaGuard(per_minute={"tool_call": "not-a-number"}).charge(...)`
+        返回 `allowed=True, unlimited=True`。
+        """
+        raw = self.per_minute.get(kind, self.DEFAULT_LIMIT)
         try:
-            return int(self.per_minute.get(kind, self.DEFAULT_LIMIT))
+            value = int(raw)
         except Exception:
-            return 0                     # 配置坏了 → 上限 0 → 全拦
+            return None                  # 配置坏了 → 交给调用方 fail-closed
+        return value
 
     def _prune(self, window: deque[float], now_ts: float) -> None:
         cutoff = now_ts - self.window_seconds
@@ -655,6 +670,13 @@ class QuotaGuard:
             window = self._events.setdefault((tenant.strip(), kind), deque())
             self._prune(window, now_ts)
             limit = self._limit_of(kind)
+            if limit is None:
+                # 配置坏了就**别放行**：配额失效比配额过严危险得多。
+                return GuardVerdict.block(
+                    f"quota denied (fail-closed): unparsable limit for kind={kind!r} "
+                    f"({self.per_minute.get(kind)!r})",
+                    hits=("quota",),
+                )
 
             # **`limit <= 0` = 关闭这一档**（与 `AGENT_RUNTIME_RATE_LIMIT=0` 同口径），
             # 不是"一个都不许"。裸写 `len+n > limit` 时 0 会拦掉一切，

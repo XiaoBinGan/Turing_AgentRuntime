@@ -134,17 +134,26 @@ class TestBoundaryDiscipline(unittest.TestCase):
     """
 
     def test_protocols_have_no_impl_body(self):
-        """用 AST 判，不靠字符串匹配 —— 后者会把 docstring 续行当成代码。"""
+        """用 AST 判，不靠字符串匹配 —— 后者会把 docstring 续行当成代码。
+
+        不用 inspect.getsource(proto)：它依赖 linecache，而本套件里有用例用
+        importlib 二次加载同一文件、有子进程测试，linecache 在极端时序下会返回
+        被截断的单行源码，导致 ast.parse 抛 SyntaxError（实测：全量跑偶发
+        ``invalid character '：'``）。改为**直接读整个文件**再按名字找类，结果确定。
+        """
         import ast
-        import inspect
+        import pathlib as _pathlib
+        _src = (_pathlib.Path(__file__).resolve().parent.parent / "contracts.py").read_text(encoding="utf-8")
+        _module_tree = ast.parse(_src)
+        _classes = {n.name: n for n in _module_tree.body if isinstance(n, ast.ClassDef)}
         for proto in (PlannerProtocol, RouterProtocol, SkillHandlerProtocol):
-            tree = ast.parse(inspect.getsource(proto).lstrip())
-            cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef))
+            cls = _classes.get(proto.__name__)
+            self.assertIsNotNone(cls, f"contracts.py 里找不到 class {proto.__name__}")
             for fn in [n for n in cls.body if isinstance(n, ast.FunctionDef)]:
                 stmts = [st for st in fn.body
                          if not (isinstance(st, ast.Expr)
                                  and isinstance(st.value, ast.Constant)
-                                 and isinstance(st.value.value, str))]   # 去掉 docstring
+                                 and isinstance(st.value.value, str))]
                 self.assertEqual(
                     len(stmts), 1,
                     f"{proto.__name__}.{fn.name} 有 {len(stmts)} 条语句（应只有 ...）")

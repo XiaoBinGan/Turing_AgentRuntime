@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import sys
 import time
 import unittest
@@ -368,6 +370,43 @@ class TestReplayer(unittest.TestCase):
         self.assertEqual(final, {"a": 2, "b": [1, 2, 3], "c": {"x": 1, "y": 2}, "n": 3})
         self.assertEqual(initial, {"a": 1, "b": [1], "c": {"x": 1}, "n": 0})
         self.assertTrue(Replayer.equivalent(initial, patches, final))
+
+    def test_replay_budget_is_equivalent_to_context(self):
+        """INV-16b：整块 `budget` 的补丁，重放终态必须与 `ContextHandle` 逐字段相等。
+
+        两类分歧都会让"重放等价"变成假话：
+          * **键名**：patch log 里可能是嵌套写法（`{"token": {"total": …}}`），
+            而 Context 落盘是扁平的（`token_total` / `token_used`）；
+          * **默认值**：Context 会把整块 budget 还原成 `Budget` 对象再落盘，
+            缺省字段被补成默认值（`max_steps=8`、`token_total=20000`…）。
+        `plane/` 不许 import `core/`（架构约束），所以 `Replayer` 只能照抄这套
+        语义；少抄一半就会产出一个"看起来等价"的假终态。
+        """
+        from contracts import Budget
+        from core.context import ContextHandle, _budget_flat
+
+        initial = {"budget": _budget_flat(Budget())}
+        cases = {
+            "set 嵌套": [Patch("set", "budget", Owner.LOOP,
+                        {"token": {"total": 20000, "used": 15},
+                         "cost_usd": {"total": 0.5, "used": 0.0},
+                         "tool_calls": {"total": 20, "used": 3}})],
+            "set 扁平": [Patch("set", "budget", Owner.LOOP,
+                        {"token_used": 7, "max_steps": 12})],
+            "merge 嵌套": [Patch("merge", "budget", Owner.LOOP,
+                          {"token": {"used": 9}, "cost_usd": {"used": 0.25}})],
+            "单字段 + 整块": [Patch("set", "budget.token_used", Owner.LOOP, 5),
+                          Patch("set", "budget", Owner.LOOP,
+                                {"token": {"total": 500}})],
+        }
+        for name, patches in cases.items():
+            with self.subTest(name):
+                snap = ContextHandle.replay(
+                    patches, initial=json.loads(json.dumps(initial))).snapshot()
+                ctx_budget = getattr(snap, "data", snap)["budget"]
+                rep_budget = Replayer.replay(
+                    json.loads(json.dumps(initial)), patches)["budget"]
+                self.assertEqual(rep_budget, ctx_budget)
 
     def test_replay_builds_missing_paths(self):
         """22) set 自动建中间 dict；append 到缺失路径建 list；merge 到缺失建 dict。"""

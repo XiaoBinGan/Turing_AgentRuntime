@@ -37,7 +37,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Sequence
 
-from contracts import Patch, Result, Usage, now_ms
+from contracts import Budget, Patch, Result, Usage, now_ms
 
 __all__ = [
     "PRICE_TABLE",
@@ -770,6 +770,56 @@ def _parent_of(data: dict, path: str, create: bool = True) -> tuple[dict, str]:
     return cur, segs[-1]
 
 
+#: 预算的扁平字段（与 `core/context.py::_BUDGET_FIELDS` 同名同序）
+_BUDGET_FIELDS: tuple[str, ...] = (
+    "token_total", "token_used", "cost_total_usd", "cost_used_usd",
+    "tool_calls_total", "tool_calls_used", "max_steps",
+)
+
+#: 预算的嵌套键 → Context 落盘时的扁平键（与 core/context.py 的 _budget_flat 对齐）。
+_BUDGET_NESTED = {
+    "token": ("token_total", "token_used"),
+    "cost_usd": ("cost_total_usd", "cost_used_usd"),
+    "tool_calls": ("tool_calls_total", "tool_calls_used"),
+}
+
+
+def _canon_budget_write(data: dict, path: str, value: Any) -> Any:
+    """把**整块 budget 的嵌套写法**规范成 Context 的扁平形状。
+
+    为什么需要：`ContextHandle` 落盘时用扁平字段（`budget.token_used`），而 patch log 里
+    可能记着调用方传入的嵌套对象（`{"token": {"total": …, "used": …}}`）。
+    `ContextHandle.replay()` 走 `_commit` 会重新扁平化，所以它等价；
+    而 `Replayer` 是纯重实现，若不在这里规范化，重放出的终态与 Context 不等价。
+
+    **不只是改键名**：`ContextHandle._commit_budget` 会把整块 budget 还原成
+    `Budget` 对象再落盘，因此**缺省字段会被默认值补齐**（`max_steps=8`、
+    `token_total=20000`…），且"当前状态"作为 fallback 参与。只做嵌套→扁平
+    的改写仍会与 Context 不等价 —— 少掉那些字段正是"看起来等价"的假象。
+    这里按同一套语义产出**完整扁平预算**：默认值 → 当前状态 → 扁平字段 → 嵌套字段
+    （顺序与 `core/context.py::_budget_from_mapping` 一致；`plane/` 不许 import
+    `core/`，所以只能照抄语义，不能复用实现）。
+    """
+    if path != "budget" or not isinstance(value, dict):
+        return value
+    flat = {f: getattr(Budget(), f) for f in _BUDGET_FIELDS}
+    current = data.get("budget")
+    if isinstance(current, dict):
+        flat.update({k: v for k, v in current.items() if k in flat})
+    for field in _BUDGET_FIELDS:                  # 1) 扁平写法
+        if field in value:
+            flat[field] = value[field]
+    for nested_key, (total_key, used_key) in _BUDGET_NESTED.items():   # 2) 嵌套写法
+        nested = value.get(nested_key)
+        if not isinstance(nested, dict):
+            continue
+        if "total" in nested:
+            flat[total_key] = nested["total"]
+        if "used" in nested:
+            flat[used_key] = nested["used"]
+    return flat
+
+
 def _apply_one(data: dict, p: Patch) -> None:
     op = str(getattr(p, "op", ""))
     path = str(getattr(p, "path", ""))
@@ -779,7 +829,7 @@ def _apply_one(data: dict, p: Patch) -> None:
 
     if op == "set":
         parent, leaf = _parent_of(data, path)
-        parent[leaf] = copy.deepcopy(value)
+        parent[leaf] = copy.deepcopy(_canon_budget_write(data, path, value))
         return
 
     parent, leaf = _parent_of(data, path)
@@ -813,7 +863,8 @@ def _apply_one(data: dict, p: Patch) -> None:
         raise TypeError(f"merge 目标 '{path}' 不是 dict: {type(cur).__name__}")
     if not isinstance(value, dict):
         raise TypeError(f"merge 的 value 不是 dict: {value!r}")
-    for k, v in value.items():
+    canon = _canon_budget_write(data, path, value)
+    for k, v in canon.items():
         cur[k] = copy.deepcopy(v)
 
 

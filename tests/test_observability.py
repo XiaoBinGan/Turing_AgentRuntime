@@ -169,6 +169,32 @@ class TestJsonLogger(unittest.TestCase):
         self.assertNotIn("sk-live", line)
         self.assertEqual(json.loads(line)["api_key"], REDACTED)
 
+    def test_04b_redacts_oauth_and_key_material(self) -> None:
+        """OAuth / PKCS8 的五种常见字段名必须脱敏。
+
+        真实事故形态：`_MANDATORY_REDACT` 只收了 `apikey/authorization/password`，
+        而 `access_token`、`refresh_token`、`session_token`、`client_secret`、
+        `private_key` 全部**明文落盘** —— 一条 `log.info("oauth.exchange", ...)`
+        就够把 refresh token 写进日志收集器。
+        刻意不收裸 `token`：它与 `input_tokens`/`total_tokens` 这类计量字段同名。
+        """
+        self.log.info("oauth.exchange",
+                      access_token="AT-1", refresh_token="RT-1",
+                      session_token="ST-1", client_secret="CS-1",
+                      private_key="-----BEGIN PRIVATE KEY-----")
+        parsed = json.loads(self.sink.lines[0])
+        for key in ("access_token", "refresh_token", "session_token",
+                    "client_secret", "private_key"):
+            self.assertEqual(parsed[key], REDACTED, f"{key} 未脱敏")
+        self.assertNotIn("RT-1", self.sink.lines[0])
+
+    def test_04c_token_metrics_are_not_redacted(self) -> None:
+        """裸 `token` 不脱敏：`input_tokens`/`total_tokens` 是计量字段，一刀切会毁可观测性。"""
+        self.log.info("llm.usage", input_tokens=12, total_tokens=34, token="ok-not-secret")
+        parsed = json.loads(self.sink.lines[0])
+        self.assertEqual(parsed["input_tokens"], 12)
+        self.assertEqual(parsed["token"], "ok-not-secret")
+
     def test_05_redact_is_case_insensitive(self) -> None:
         self.log.info("llm.call", API_KEY="sk-upper", Authorization="Bearer xyz",
                       Password="hunter2", note="ok")

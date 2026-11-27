@@ -110,8 +110,17 @@ HISTOGRAM_BUCKETS: tuple[float, ...] = (
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 )
 
-#: 这三类键**永远**脱敏，不可通过 redact_keys 关闭（安全底线，不是可选项）
-_MANDATORY_REDACT = frozenset({"apikey", "authorization", "password"})
+#: 这几类键**永远**脱敏，不可通过 redact_keys 关闭（安全底线，不是可选项）。
+#:
+#: 收录标准：**语义无歧义**的凭据字段名。刻意不收 `token` —— 它与
+#: `input_tokens` / `total_tokens` 这类计量字段同名，一刀切会毁掉可观测性；
+#: 需要时用 `add_redact_keys("token")` 显式打开。
+_MANDATORY_REDACT = frozenset({
+    "apikey", "authorization", "password",
+    "accesstoken", "refreshtoken", "sessiontoken",
+    "clientsecret", "privatekey", "secret",
+    "credential", "credentials",
+})
 
 #: JSON 记录的保留键。字段名撞上它们时改名，绝不允许调用方覆盖 ts/level
 _RESERVED_FIELDS = ("ts", "level", "event", "service")
