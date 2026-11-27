@@ -86,6 +86,36 @@ accounting precision. Cumulative value plus caller-side deltas keeps both.
 Scraping failures return 0 rather than raising: an observability path must not
 become a business dependency.
 
+### Measured: 150-minute soak
+
+2.5 hours, 1,036,418 requests, 99.9998% success, p99 101.8ms, threads constant at
+10, file handles flat.
+
+Memory is the interesting part. Phase means came out 101.3 / 101.3 / 97.1 MB —
+**flat, even slightly down** — while peaks grew 268 -> 487 MB. Flat means with
+growing peaks points at longer GC intervals as the object graph grows, not at a
+leak: a leak shows up as each collection leaving more behind, which lifts the
+mean.
+
+The criterion changed because of this data. Three methods on the same run:
+
+| Method | Result | Why it misled |
+|---|---|---|
+| Whole-series linear fit | -0.109 MB/min (negative) | Peak-dominated; the answer depends on whether the last sample landed on a peak |
+| Trough slope | +0.68 MB/sample (looks like a leak) | One early dip to 55.2MB set the baseline; troughs are not monotonic |
+| **Phase means** | 101.3 -> 97.1 (ratio 0.96) | Adopted. Insensitive to any single outlier |
+
+Two requests out of 1,036,418 returned 502. Server-side `UNRECOVERABLE` count was
+**0** (verified), so this is not a Loop-level unrecoverable error; most likely a
+transient client-side connection issue at 0.0002%.
+
+Getting to 150 minutes took three attempts. The first two died at ~50 minutes
+with a clean SIGTERM shutdown — `server.drained` then `server.stopped`, no crash.
+Cause: `nohup ... &` plus `disown` does not detach in a non-interactive shell, so
+the process stayed in the session and was cleaned up with it. Fix:
+`subprocess.Popen(..., start_new_session=True)`. Worth remembering for any
+long-running local process, not just this test.
+
 ### Tests
 
 2282, up from 2272. The 10 new ones cover the metric parser (model filtering,

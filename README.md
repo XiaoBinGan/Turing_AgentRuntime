@@ -225,7 +225,7 @@ Also measured:
 
 | Capability | Result | Script |
 |---|---|---|
-| Soak, 20 minutes (2 runs) | 121k and 137k requests, 100% success, p99 105-167ms, threads and file handles flat, steady-state RSS 85MB, peak 238MB, returns to 6MB after load stops | `scripts/soak_test.py` |
+| Soak, **150 minutes** | 1,036,418 requests, 99.9998% success, p99 101.8ms, threads constant at 10, file handles flat, steady-state RSS 101MB -> 97MB (no leak), peak growing 268 -> 487MB from longer GC cycles | `scripts/soak_test.py` |
 | Real-LLM latency | Two upstreams measured: deepseek-flash p50 2672ms, and a local Strata engine on 2xT4 at p50 4266ms. A 4-6 step turn is 11-26s end to end. Also ran a full turn against the local engine to confirm the text-rendered tool descriptions produce valid `tool_calls` | `scripts/real_llm_capacity.py` |
 | Multi-worker | Requests do distribute across 4 workers, but throughput does not rise — the load generator saturates first | `AGENT_RUNTIME_WORKERS` |
 | Cross-replica sessions | Works via `AGENT_RUNTIME_STORE=redis`: turn_index stays continuous across replicas | `_make_store()` |
@@ -238,8 +238,8 @@ What is still open:
   same setup tops out at 3,260 RPS with server CPU at only 271% — the requests
   are in flight, not being processed. Capacity planning has to start from where
   the clients are.
-- **Soak ran 20 minutes**, not hours. Slow leaks over a longer window would not
-  show.
+- **Soak reached 2.5 hours.** Truly multi-day behaviour under real traffic is
+  still unmeasured.
 
 Details, including a wrong conclusion I had to retract, are in
 `docs/design/CAPACITY.md`.
@@ -393,7 +393,7 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 道，需要真服务
 
 | 能力 | 结果 | 脚本 |
 |---|---|---|
-| 长稳 20 分钟（两轮） | 12.1 万 / 13.7 万请求、100% 成功、p99 105-167ms、线程与句柄恒定、稳态 85MB、峰值 238MB、停止负载后回落到 6MB | `scripts/soak_test.py` |
+| 长稳 **150 分钟** | 103.6 万请求、成功率 99.9998%、p99 101.8ms、线程恒定 10、句柄平坦、稳态内存 101→97MB（无泄漏）、峰值 268→487MB 是 GC 周期变长 | `scripts/soak_test.py` |
 | 真实 LLM 延迟 | 两组上游：deepseek-flash p50 2672ms；本地 Strata（2×T4）p50 4266ms。4-6 步回合端到端 11-26 秒。另跑了完整回合验证「文本渲染的工具描述能被模型正确转成 tool_calls」 | `scripts/real_llm_capacity.py` |
 | 多 worker | **4 worker 提升 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%），8 worker 3.59×。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
 | 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
@@ -404,7 +404,7 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 道，需要真服务
 - **网络 RTT 会封顶吞吐，这一条已实测**：同机 8 worker 到 6,911-8,068 RPS；
   换一台机器经 28ms 链路打过来，同样配置只有 3,260 RPS，且服务端 CPU 仅 271%
   —— 请求在路上，不在处理。容量规划要先问"客户端在哪"。
-- **长稳只跑了 20 分钟**，不是数小时。更慢的泄漏测不出来。
+- **长稳跑到 2.5 小时**。真实流量下连续数天的行为仍未测。
 
 细节（含一个我不得不撤回的错误结论）见 `docs/design/CAPACITY.md`。
 

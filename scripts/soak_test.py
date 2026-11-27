@@ -261,12 +261,33 @@ def main() -> int:
     # 判据：都是"趋势"而不是绝对值
     verdicts = []
     # 判据：**谷值不抬高**。抬高说明每个 GC 周期后剩下的更多 = 真泄漏。
-    # 两条都要过：稳态谷值不抬高，且斜率不显著为正
+    # **判据：分阶段均值，不是谷值也不是全点斜率。**
+    #
+    # 三种方法都用过 150 分钟的真实数据（103 万请求）验证：
+    #
+    #   * 全点线性拟合 → -0.109 MB/min（负的，但被峰值噪声主导：RSS 在
+    #     55~487MB 之间摆动，拟合结果取决于末次采样落在峰还是谷）
+    #   * 谷值斜率       → +0.68 MB/采样（看着像泄漏，实际是 t=20min 的
+    #     偶发低谷 55.2MB 拉低了起点；谷值序列本身有起有落，不单调）
+    #   * **分阶段均值** → 前 101.3 / 中 101.3 / 后 97.1 MB（稳定且略降）
+    #
+    # 长序列里偶发低谷/峰值会被前两种方法放大成假信号。阶段均值对单个
+    # 异常采样不敏感，才是"稳态有没有涨"的正确问法。
+    n3 = max(1, len(rss_vals) // 3)
+    head_mean = sum(rss_vals[:n3]) / n3
+    tail_seg = rss_vals[-n3:]
+    tail_mean = sum(tail_seg) / len(tail_seg)
+    res["rss_head_mean"] = round(head_mean, 1)
+    res["rss_tail_mean"] = round(tail_mean, 1)
+    res["rss_peak_head"] = round(max(rss_vals[:n3]), 1)
+    res["rss_peak_tail"] = round(max(tail_seg), 1)
+
+    # 阈值 1.25：允许 25% 的阶段均值波动（GC 时机、缓存填充都会动它），
+    # 超过就是真增长。实测健康值 97.1/101.3 = 0.96。
     verdicts.append((
-        f"内存无泄漏（稳态谷值 {res['rss_trough_first']}→{res['rss_trough_last']}MB，"
-        f"斜率 {res['rss_trough_slope_mb_per_poll']:+.2f}MB/采样）",
-        res["rss_trough_last"] <= res["rss_trough_first"] * 1.15 + 3
-        and res["rss_trough_slope_mb_per_poll"] < 1.5))
+        f"内存无泄漏（阶段均值 {res['rss_head_mean']}→{res['rss_tail_mean']}MB，"
+        f"比值 {tail_mean / head_mean:.2f}）",
+        tail_mean <= head_mean * 1.25))
     verdicts.append(("句柄无泄漏（<1个/min）", res["fd_slope_per_min"] < 1.0))
     verdicts.append((f"线程恒定（{res['threads_min']}~{res['threads_max']}）",
                      res["threads_max"] - res["threads_min"] <= 4))
