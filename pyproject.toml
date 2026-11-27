@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turing-agent-runtime"
-version = "0.7.0"
+version = "0.7.1"
 description = "A production-shaped runtime for LLM agents. Runtime owns the shape, application owns the content."
 readme = "README.md"
 requires-python = ">=3.12"

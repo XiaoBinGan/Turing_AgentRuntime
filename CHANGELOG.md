@@ -10,6 +10,45 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.7.1] - 2026-11-27
+
+Documentation restructure. No code changes.
+
+`CAPACITY.md` had grown by appending: every re-measurement added a section, so
+the file ended up with two soak chapters, two multi-worker chapters, and a pile of
+retracted numbers sitting beside the current ones. The data was right; the
+document made a reader do the sorting.
+
+Rewritten around a fixed structure:
+
+| Section | Content |
+|---|---|
+| §0 | Lookup table — every current number with its conditions and where it came from |
+| §1-§8 | One dimension each, with the earliest measurement demoted to a sub-section |
+| §9 | What is still open |
+| Appendix A | **How to measure** — six disciplines that each came from a mistake |
+| Appendix B | **Retracted conclusions** — kept as evidence, marked do-not-cite |
+
+Appendix A is the part worth reading. It records why the load generator's own
+ceiling has to be checked first, why warmup has to be dropped, why phase means
+beat both linear fits and trough slopes on sawtooth data, how to tell server
+saturation from network saturation by watching CPU rather than RPS, that
+long-running local processes need `start_new_session=True`, and that cleanup
+should go by PID because `pkill -f` matches the shell running it.
+
+Appendix B keeps the 15x throughput error, the false memory-leak alarm, the
+"multi-worker does nothing" conclusion, and the "cache billing is untestable"
+framing. Each has the wrong conclusion, why it was wrong, and what the correction
+taught. Deleting them would have removed the only evidence of how these
+measurements go wrong.
+
+Also synced the 20-minute figures in `SLO.md` and `RUNBOOK.md` to the 150-minute
+run (p95 91.7ms, p99 101.8ms, phase means 101.3 / 101.3 / 97.1MB).
+
+All 10 internal anchor links verified against GitHub's slug rules.
+
+---
+
 ## [0.7.0] - 2026-11-27
 
 Closes the last two "unverified" items. One produced a number; the other produced
@@ -693,6 +732,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.7.1]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.7.1
 [0.7.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.7.0
 [0.6.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.6.0
 [0.5.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.5.0
