@@ -244,6 +244,53 @@ AGENT_RUNTIME_AUTH=off .venv/bin/python serve.py     # 显式裸奔，仅限本�
 | `OPENAI_TEMPERATURE` | 否 | adapter 默认 | 采样温度 | 非数字 → 被静默忽略（不报错），你以为设了 |
 | `OPENAI_PRICE_IN_PER_M` / `OPENAI_PRICE_OUT_PER_M` | 否 | 0 | 成本核算单价（每百万 token，入/出分开） | 不配 → `budget.cost_total_usd` 恒为 0，**成本预算永不触发**，超支无告警；配成「每千 token」的价 → 成本放大 1000 倍，预算瞬间打满 |
 
+### 五个可选能力面（默认全关）
+
+这五个模块实现完整、有测试，但**默认不装配** —— 它们各自需要外部依赖。
+配了环境变量才构造，配错会**报错**而不是静默跳过（"配了但没效果"最难查）。
+
+| 环境变量 | 作用 | 依赖 | 暴露成 |
+|---|---|---|---|
+| `AGENT_RUNTIME_SEMANTIC=1` | Memory 换成语义向量召回 | `AGENT_RUNTIME_EMBEDDING_BASE_URL` | — |
+| `AGENT_RUNTIME_RESOURCES='mod:fn'` | 外部资源 → 只读工具 | 工厂返回 `[(ResourceRef, reader), ...]` | `read_<uri>` 系列 |
+| `AGENT_RUNTIME_KNOWLEDGE='mod:fn'` | 文档入库 + BM25 检索 | 工厂返回 `[Document, ...]` | `search_knowledge` |
+| `AGENT_RUNTIME_SANDBOX_TOOL=1` | 命令执行沙箱 | 无（内置白名单） | `sandbox_run`（T2，需审批） |
+| `AGENT_RUNTIME_BLACKBOARD=1` | 多 agent 共享状态 | 有 Redis → 分布式，否则进程内 | `blackboard_read` |
+
+**为什么默认关**：每一项都改变运行时语义。
+
+- `SEMANTIC` 让记忆召回依赖外部网关（挂了会降级回 bigram）
+- `RESOURCES` / `KNOWLEDGE` 把外部内容暴露给模型，是权限面扩张
+- `SANDBOX_TOOL` 默认 **T2**，即"要人工审批才能执行" —— 这是刻意的
+- `BLACKBOARD` 在多副本下需要共享 KV 才有意义
+
+### 接入示例
+
+```python
+# myres.py —— 资源工厂
+from contracts import ResourceRef
+def make():
+    ref = ResourceRef(uri="git://repo/diff", mime="text/plain", name="diff")
+    return [(ref, lambda uri: open("/tmp/last.diff").read())]
+```
+
+```python
+# mykn.py —— 知识工厂
+from plane.knowledge import Document
+def make():
+    return [Document(doc_id="d1", text="连接池耗尽会导致 p99 阶梯上升。")]
+```
+
+```bash
+AGENT_RUNTIME_RESOURCES='myres:make' \
+AGENT_RUNTIME_KNOWLEDGE='mykn:make' \
+AGENT_RUNTIME_SANDBOX_TOOL=1 \
+AGENT_RUNTIME_BLACKBOARD=1 \
+python serve.py
+```
+
+启动日志会各打一条 `*.enabled`，**没打就是没装上**。
+
 ### 运维端点（只读）
 
 ```

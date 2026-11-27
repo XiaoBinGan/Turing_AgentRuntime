@@ -10,6 +10,71 @@ under **Breaking**, with a migration note.
 
 ---
 
+## [0.8.0] - 2026-11-27
+
+Five modules were implemented, tested, and demonstrated — and never wired into
+`serve.py`. 2,367 lines and 91 dedicated tests that production could not reach.
+
+### The scope of it
+
+| Module | Lines | Tests | `serve.py` refs (before) |
+|---|---|---|---|
+| `plane/resources.py` | 494 | indirect | **0** |
+| `plane/knowledge.py` | 551 | 23 | **0** |
+| `plane/sandbox_tool.py` | 372 | 33 | **0** |
+| `plane/blackboard.py` | 660 | 35 | **0** |
+| `plane/semantic.py` | 290 | indirect | **0** |
+
+The architecture diagram claims four resource planes. Only three were assembled:
+Tool, Memory, Workflow. Knowledge existed, had 23 passing tests, and had no
+production entry point.
+
+### Added
+
+All five now wire up behind explicit environment variables, off by default
+because each one changes runtime semantics:
+
+| Variable | Effect | Surfaced as |
+|---|---|---|
+| `AGENT_RUNTIME_SEMANTIC=1` | Memory recall uses embeddings instead of bigram | — |
+| `AGENT_RUNTIME_RESOURCES='mod:fn'` | External resources become read-only tools | `read_<uri>` |
+| `AGENT_RUNTIME_KNOWLEDGE='mod:fn'` | Documents indexed, BM25 search | `search_knowledge` |
+| `AGENT_RUNTIME_SANDBOX_TOOL=1` | Command sandbox | `sandbox_run` (T2, needs approval) |
+| `AGENT_RUNTIME_BLACKBOARD=1` | Multi-agent shared state | `blackboard_read` |
+
+Misconfiguration **raises** rather than silently skipping. Opening
+`SEMANTIC=1` without an embedding endpoint fails at startup, because the silent
+alternative — falling back to bigram — produces "I enabled semantic recall and it
+behaves exactly like before", which is the hardest kind of report to act on.
+
+`SANDBOX_TOOL` defaults to **T2**, meaning the sandbox requires human approval to
+run a command. That is deliberate, not an oversight; `AGENT_RUNTIME_SANDBOX_TIER`
+can lower it for tests.
+
+### Two implementation notes
+
+`semantic_memory()` returns an **instance**, not a class — it defines a subclass
+and instantiates it. Taking `type()` is what lets the caller pass its own
+`provider` and `extractor`; without it those two arguments are silently dropped
+and memory uses the default provider.
+
+`_instantiate()` treats any callable with a `__dict__` as an already-built
+instance, but plain functions have `__dict__` too, so factory functions are never
+called. The resources path handles this explicitly rather than changing
+`_instantiate`, which other SPI paths depend on.
+
+### Tests
+
+2301, up from 2282. `tests/test_optional_planes.py` covers all five in **both
+directions** — configured means active, unconfigured means inert — plus the
+misconfiguration cases that must raise.
+
+That two-way check is the point. This defect class is invisible to code review
+(the implementation is correct), to unit tests (the module works), and to the demo
+(it has its own wiring). Only a request through the HTTP surface reveals it.
+
+---
+
 ## [0.7.1] - 2026-11-27
 
 Documentation restructure. No code changes.
@@ -732,6 +797,7 @@ Four issues applied here:
 - `scripts/check_readme_facts.py`: compares README claims with the code so
   documentation cannot rot silently.
 
+[0.8.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.8.0
 [0.7.1]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.7.1
 [0.7.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.7.0
 [0.6.0]: https://github.com/XiaoBinGan/Turing_AgentRuntime/releases/tag/v0.6.0

@@ -273,7 +273,7 @@ __all__ = [
 ]
 
 #: 运行时自述里的版本号。不读 git、不 import 打包元数据：一个探针不该为此碰文件系统。
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 
 #: 服务名（进日志的 `service` 字段与 /v1/info）
 SERVICE_NAME = "agent-runtime"
@@ -1764,6 +1764,39 @@ def _make_memory_provider(env: Mapping[str, str]) -> Any:
             f"（可选 memory / vector / 'module:attr'）")
     obj = load_extension(kind, kind="memory_provider")
     return _instantiate(obj)
+
+
+def _make_embedder(env: Mapping[str, str]) -> Any:
+    """造一个 embedding 提供者（给语义召回 / 向量检索用）。
+
+    只认显式配置，**不猜**：没配就返回 None，由调用方决定"没配"该报错还是降级。
+    这一条很重要 —— 早期几个 factory 用"猜一个默认值"，表现是配错了却
+    "看起来能跑"，而效果和没配一样（比如语义召回静默退回 bigram）。
+
+    支持的键（按优先级）：
+
+        AGENT_RUNTIME_EMBEDDING_BASE_URL     专用（推荐）
+        AGENT_RUNTIME_VECTOR_BASE_URL        向量后端那套的兼容名
+
+    model 同理：`AGENT_RUNTIME_EMBEDDING_MODEL` / `AGENT_RUNTIME_VECTOR_MODEL`。
+    """
+    base = (env.get("AGENT_RUNTIME_EMBEDDING_BASE_URL")
+            or env.get("AGENT_RUNTIME_VECTOR_BASE_URL") or "").strip()
+    if not base:
+        return None
+    model = (env.get("AGENT_RUNTIME_EMBEDDING_MODEL")
+             or env.get("AGENT_RUNTIME_VECTOR_MODEL") or "").strip()
+    try:
+        from adapters.embeddings import OpenAICompatEmbeddings
+        return OpenAICompatEmbeddings(
+            base_url=base, model=model or "text-embedding-3-small",
+            api_key=(env.get("AGENT_RUNTIME_EMBEDDING_API_KEY")
+                     or env.get("OPENAI_API_KEY") or ""),
+            dim=int(env.get("AGENT_RUNTIME_EMBEDDING_DIM") or 0) or None)
+    except Exception as exc:                                   # noqa: BLE001
+        raise RuntimeError(
+            f"embedding 提供者装配失败（base_url={base!r}）："
+            f"{type(exc).__name__}: {exc}") from exc
 
 
 def _make_store(env: Mapping[str, str]) -> Any:
@@ -4741,11 +4774,44 @@ def build_gateway_from_env(*, logger: Any = None,
         try:
             from plane.memory import MemoryRuntime
             mem_provider = _make_memory_provider(e)
-            memory_rt = MemoryRuntime(provider=mem_provider,
-                                      extractor=_instantiate(extractor_factory))
+            # ── 语义召回（可选）──────────────────────────────
+            # 默认用 bigram 相似度（纯本地、无外部依赖）。
+            # 开 `AGENT_RUNTIME_SEMANTIC=1` 且配了 embedding 网关时，
+            # 换成语义向量 —— **降级安全**：网关挂了 `SemanticSimilarity`
+            # 内部回落 bigram，召回不中断。
+            #
+            # 为什么做成子类而不是改 MemoryRuntime：那个模块是纯 bigram 的
+            # 稳定实现（45 个用例），语义召回依赖外部网关。组合让两边独立演进。
+            mem_cls: Any = MemoryRuntime
+            if _truthy(e.get("AGENT_RUNTIME_SEMANTIC")):
+                try:
+                    from plane.wiring import semantic_memory
+                    sem_provider = _make_embedder(e)
+                    if sem_provider is None:
+                        raise RuntimeError(
+                            "AGENT_RUNTIME_SEMANTIC=1 但 embedding 网关未配置"
+                            "（需要 AGENT_RUNTIME_EMBEDDING_BASE_URL 或 "
+                            "AGENT_RUNTIME_VECTOR_BASE_URL）")
+                    # `semantic_memory()` 返回的是**实例**（它内部定义了子类并
+                    # 立即实例化）。取 `type()` 拿到类，才能用本进程的
+                    # provider/extractor 构造 —— 否则那两个参数会被丢掉，
+                    # 表现是"开了语义召回但记忆用的是默认 provider"。
+                    mem_cls = type(semantic_memory(MemoryRuntime,
+                                                   provider=sem_provider))
+                    if logger is not None:
+                        logger.info("memory.semantic", enabled=True,
+                                    cls=mem_cls.__name__)
+                except Exception as exc:                       # noqa: BLE001
+                    # 显式开了却装不上 → 报错。静默退回 bigram 等于
+                    # "配了语义召回但效果和没配一样"，最难查。
+                    raise RuntimeError(
+                        f"语义召回装配失败：{type(exc).__name__}: {exc}") from exc
+            memory_rt = mem_cls(provider=mem_provider,
+                                extractor=_instantiate(extractor_factory))
             if logger is not None:
                 logger.info("memory.enabled",
-                            extractor=getattr(extractor_factory, "__name__", "?"))
+                            extractor=getattr(extractor_factory, "__name__", "?"),
+                            semantic=mem_cls is not MemoryRuntime)
         except Exception as exc:                               # noqa: BLE001
             # 配了 Extractor 却装不上 → 报错。静默不装等于"记忆永远为空"。
             raise RuntimeError(f"Memory 装配失败：{type(exc).__name__}: {exc}") from exc
@@ -4768,16 +4834,260 @@ def build_gateway_from_env(*, logger: Any = None,
                 f"AGENT_RUNTIME_PLANNER 实例化失败：{type(exc).__name__}: {exc}\n"
                 f"提示：需要参数的实现要写成工厂函数，"
                 f"例如 'agents.planner:make_planner'") from exc
+    # ── 资源面（可选）：把外部资源暴露成只读工具 ──────────────
+    # `AGENT_RUNTIME_RESOURCES='module:factory'`，factory 返回
+    # `[(ResourceRef, reader), ...]` —— reader 是 `uri -> str` 的读取函数。
+    #
+    # 为什么需要它：`ResourceRuntime` 实现了权限（`resource.*` scope）、缓存、
+    # 大小上限，但**没有任何生产入口构造它**（早先只有 demo 用）。
+    # 没有这一行，`RuntimeWiring.resources` 永远是空元组，
+    # 架构图上的「资源面」在 HTTP 面等于不存在。
+    resource_rt = None
+    resource_refs: tuple[Any, ...] = ()
+    res_factory = load_extension(e.get("AGENT_RUNTIME_RESOURCES"),
+                                 kind="resources", logger=logger)
+    if res_factory is not None:
+        try:
+            from plane.resources import ResourceRegistry, ResourceRuntime
+            # **不直接用 `_instantiate`**：它把"有 `__dict__` 的 callable"
+            # 当成实例原样返回，而普通函数也有 `__dict__` —— 于是工厂函数
+            # 不会被调用，拿到的是函数对象本身。
+            # 这里显式区分：类是构造器，函数是工厂。
+            items = (res_factory() if not isinstance(res_factory, type)
+                     else res_factory())
+            if not isinstance(items, (list, tuple)):
+                raise TypeError(
+                    f"AGENT_RUNTIME_RESOURCES 的工厂必须返回 [(ResourceRef, reader), ...]，"
+                    f"收到 {type(items).__name__}")
+            res_reg = ResourceRegistry()
+            refs: list[Any] = []
+            for entry in items:
+                try:
+                    ref, reader = entry
+                except (TypeError, ValueError) as exc:
+                    raise TypeError(
+                        f"每一项必须是 (ResourceRef, reader) 二元组，"
+                        f"收到 {entry!r}") from exc
+                res_reg.register(ref, reader)
+                refs.append(ref)
+            resource_rt = ResourceRuntime(res_reg, governance=governance)
+            resource_refs = tuple(refs)
+            if logger is not None:
+                logger.info("resources.enabled", count=len(refs),
+                            uris=[str(getattr(r, "uri", "?")) for r in refs][:10])
+        except Exception as exc:                               # noqa: BLE001
+            # 配了却装不上 → 报错。静默跳过等于"资源面配了但模型看不见"。
+            raise RuntimeError(
+                f"资源面装配失败：{type(exc).__name__}: {exc}") from exc
+
+    # ── 知识面（可选）：文档入库 + 检索暴露成工具 ──────────────
+    # `AGENT_RUNTIME_KNOWLEDGE='module:factory'`，factory 返回
+    # `[Document, ...]`（`plane.knowledge.Document`）。
+    #
+    # 为什么需要它：`KnowledgeBase`（551 行、23 个用例）实现了 BM25 检索、
+    # 版本线、分块，但**没有任何生产入口构造它** —— 架构图画着「四资源面」，
+    # 而 HTTP 面只装了 Tool / Memory / Workflow 三个。这一行补上第四个。
+    knowledge_rt = None
+    knowledge_docs: tuple[Any, ...] = ()
+    kn_factory = load_extension(e.get("AGENT_RUNTIME_KNOWLEDGE"),
+                                kind="knowledge", logger=logger)
+    if kn_factory is not None:
+        try:
+            from plane.knowledge import KnowledgeBase
+            docs = kn_factory() if not isinstance(kn_factory, type) else kn_factory()
+            if not isinstance(docs, (list, tuple)):
+                raise TypeError(
+                    f"AGENT_RUNTIME_KNOWLEDGE 的工厂必须返回 [Document, ...]，"
+                    f"收到 {type(docs).__name__}")
+            kb = KnowledgeBase()
+            kb.add_many(docs)
+            # `rebuild()` 才真正建索引；不调它 `retrieve` 会拿到空结果。
+            # 早先 demo 里就踩过：add 完不 rebuild，检索永远 0 命中。
+            kb.rebuild()
+            knowledge_rt = kb
+            knowledge_docs = tuple(docs)
+            if logger is not None:
+                logger.info("knowledge.enabled", docs=len(docs),
+                            chunks=(kb.stats() or {}).get("chunks", 0))
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(
+                f"知识面装配失败：{type(exc).__name__}: {exc}") from exc
+
     wiring = None
     try:
         from plane.wiring import RuntimeWiring
         from core.summary import HistoryCompressor
         wiring = RuntimeWiring(router=router_obj, memory=memory_rt,
+                               resource_rt=resource_rt, resources=resource_refs,
                                compressor=HistoryCompressor() if memory_rt else None,
                                recall_k=int(e.get("AGENT_RUNTIME_RECALL_K") or 5))
     except Exception as exc:                                   # noqa: BLE001
         if logger is not None:
             logger.warn("wiring.disabled", reason=f"{type(exc).__name__}: {exc}")
+
+    # 把资源配置注册成**只读工具**：注册后模型才能在 `manifests()` 里看见它们。
+    # 必须在 `_loop_factory` 之前完成 —— Builder 从 registry 生成工具描述，
+    # 晚一步注册等于"配了但模型永远看不到"。
+    if wiring is not None and resource_refs:
+        try:
+            wiring.attach_tools(registry)
+            if logger is not None:
+                logger.info("resources.tools", count=len(wiring.resource_tools),
+                            names=[m.name for m in wiring.resource_tools][:10])
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(
+                f"资源注册成工具失败：{type(exc).__name__}: {exc}") from exc
+
+    # ── 共享黑板（可选）：多 agent 的 CAS 状态面 ─────────────
+    # `AGENT_RUNTIME_BLACKBOARD=1` 开启。
+    #
+    # 后端自动选择：KV 是 redis → `DistributedBlackboard`（跨副本 CAS 由服务端
+    # 保证，两个副本各持实例也只有一方成功）；否则 `Blackboard`（进程内锁）。
+    #
+    # 为什么需要它：`plane/blackboard.py`（660 行、35 个用例）实现了分区、
+    # CAS、版本线、历史，但**没有任何生产入口构造它** —— 只在 demo 里跑过。
+    # 不接线等于"多 agent 协调能力配了但没有"。
+    blackboard_rt = None
+    if _truthy(e.get("AGENT_RUNTIME_BLACKBOARD")):
+        try:
+            _kv = kv if "kv" in locals() and kv is not None else None
+            if _kv is not None and not isinstance(_kv, _Unavailable):
+                from plane.distributed import DistributedBlackboard
+                blackboard_rt = DistributedBlackboard(
+                    _kv, prefix=str(e.get("AGENT_RUNTIME_BLACKBOARD_PREFIX")
+                                   or "bb:"))
+                _bb_mode = "distributed"
+            else:
+                from plane.blackboard import Blackboard
+                blackboard_rt = Blackboard()
+                _bb_mode = "in-process"
+            if logger is not None:
+                logger.info("blackboard.enabled", mode=_bb_mode)
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(
+                f"共享黑板装配失败：{type(exc).__name__}: {exc}") from exc
+
+    # ── 执行沙箱（可选）：把 `sandbox_run` 注册成 T2 工具 ─────
+    # `AGENT_RUNTIME_SANDBOX_TOOL=1` 开启；`AGENT_RUNTIME_SANDBOX_ALLOW` 给白名单
+    # （逗号分隔，如 `git,grep,ls`），不给就用 `DEFAULT_ALLOWED_COMMANDS`。
+    #
+    # 为什么需要它：`plane/tool.py` 里的 `SubprocessSandbox` 只是**库**。
+    # 没有 `ToolManifest` 它就不在 `registry.manifests()` 里，模型永远看不到 ——
+    # 沙箱存在却不被使用，等于不存在。走 `register_sandbox` 才能保证
+    # scope / policy / 审批 / 预算 / 限流 / 审计 / 脱敏 全都生效。
+    if _truthy(e.get("AGENT_RUNTIME_SANDBOX_TOOL")):
+        try:
+            from contracts import RiskTier
+            from plane.sandbox_tool import register_sandbox
+            _allow_raw = str(e.get("AGENT_RUNTIME_SANDBOX_ALLOW") or "").strip()
+            _allow = ([x.strip() for x in _allow_raw.split(",") if x.strip()]
+                      or None)
+            # 风险档可下调（`AGENT_RUNTIME_SANDBOX_TIER=1` 免审批，仅测试用）。
+            # 上调到 T3 合法但 Dispatcher 只会 denied —— 那是刻意的硬边界。
+            _tier = int(e.get("AGENT_RUNTIME_SANDBOX_TIER") or 2)
+            _m = register_sandbox(
+                registry, allowed_commands=_allow,
+                risk_tier=RiskTier(_tier))
+            if logger is not None:
+                logger.info("sandbox.tool", name=_m.name,
+                            risk_tier=_m.risk_tier.name,
+                            allowlist=_allow or "default")
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(
+                f"沙箱工具装配失败：{type(exc).__name__}: {exc}") from exc
+
+    # 黑板注册成只读工具 —— 模型能看共享状态，写入走程序（CAS 不适合模型）。
+    if blackboard_rt is not None:
+        try:
+            from contracts import RiskTier, SideEffect, ToolManifest
+
+            def _bb_read(args: dict, e: ExecCtx) -> dict:
+                key = str(args.get("key") or "").strip()
+                if not key:
+                    raise ValueError("key 不能为空")
+                entry = blackboard_rt.read(
+                    key, agent=str((args.get("agent") or "")).strip())
+                if entry is None:
+                    return {"key": key, "found": False}
+                return {"key": key, "found": True,
+                        "value": entry.value, "version": entry.version,
+                        "owner": entry.owner}
+
+            registry.register(
+                ToolManifest(
+                    name="blackboard_read",
+                    side_effect=SideEffect.READ_ONLY,
+                    risk_tier=RiskTier.T0_SAFE,
+                    description="读取多 agent 共享黑板上的某个键（含版本号）。",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string"},
+                            "agent": {"type": "string",
+                                      "description": "以哪个 agent 身份读（影响私有分区可见性）"},
+                        },
+                        "required": ["key"],
+                        "additionalProperties": False,
+                    },
+                ),
+                _bb_read,
+            )
+            if logger is not None:
+                logger.info("blackboard.tools", names=["blackboard_read"])
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(
+                f"黑板注册成工具失败：{type(exc).__name__}: {exc}") from exc
+
+    # 知识面注册成 `search_knowledge` 工具 —— 模型通过它检索文档。
+    # 不注册的话，文档入了库却没有任何调用路径（等于"配了知识库但模型不知道"）。
+    if knowledge_rt is not None:
+        try:
+            from contracts import RiskTier, SideEffect, ToolManifest
+
+            def _search_knowledge(args: dict, e: ExecCtx) -> dict:
+                query = str(args.get("query") or "").strip()
+                if not query:
+                    raise ValueError("query 不能为空")
+                k = int(args.get("k") or 4)
+                k = max(1, min(k, 20))          # 上限 20：防止一次拉爆上下文
+                hits = knowledge_rt.retrieve(query, k=k)
+                return {
+                    "query": query,
+                    "hits": [
+                        {"doc_id": h.doc_id, "text": h.text,
+                         "score": round(float(h.score), 4),
+                         "span": h.span, "version": h.version}
+                        for h in hits
+                    ],
+                    "count": len(hits),
+                }
+
+            registry.register(
+                ToolManifest(
+                    name="search_knowledge",
+                    side_effect=SideEffect.READ_ONLY,
+                    risk_tier=RiskTier.T0_SAFE,
+                    description="检索内部知识库（BM25）。返回相关文档片段与得分。",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string",
+                                      "description": "检索词（自然语言）"},
+                            "k": {"type": "integer", "minimum": 1,
+                                  "maximum": 20, "default": 4,
+                                  "description": "返回条数"},
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                ),
+                _search_knowledge,
+            )
+            if logger is not None:
+                logger.info("knowledge.tools", names=["search_knowledge"])
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(
+                f"知识注册成工具失败：{type(exc).__name__}: {exc}") from exc
 
     def _loop_factory(goal: str, _tenant_ctx: Any) -> Any:
         llm = _real() if llm_kind == "openai" else _scripted(goal)

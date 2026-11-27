@@ -327,3 +327,35 @@ flowchart TB
 
 新增的 `check_config_defaults.py` 补上这一类：**凡是文档承诺的默认值，
 都必须有一条断言指向真实装配路径**。
+
+
+---
+
+## 五个可选能力面的接线状态（2026-11-27）
+
+早先这五个模块在 `serve.py` 里引用 **0 次** —— 实现、测试、demo 都完整，
+只是生产入口没装配。共 2,367 行代码、91 个用例曾经"存在但不可达"。
+
+| 模块 | 行数 | 现在 | 环境变量 |
+|---|---|---|---|
+| `plane/resources.py` | 494 | ✅ 已接 | `AGENT_RUNTIME_RESOURCES` |
+| `plane/knowledge.py` | 551 | ✅ 已接 | `AGENT_RUNTIME_KNOWLEDGE` |
+| `plane/sandbox_tool.py` | 372 | ✅ 已接 | `AGENT_RUNTIME_SANDBOX_TOOL` |
+| `plane/blackboard.py` | 660 | ✅ 已接 | `AGENT_RUNTIME_BLACKBOARD` |
+| `plane/semantic.py` | 290 | ✅ 已接 | `AGENT_RUNTIME_SEMANTIC` |
+
+**四资源面现在齐了**：Tool / Memory / Knowledge / Workflow。
+
+### 这个缺陷的模式值得记
+
+它和审批端点（`loop.resume()` 存在但 HTTP 面用不了）是同一类：
+
+> **实现 + 测试 + demo 都完成，只有装配路径漏了。**
+
+这类缺陷特别难发现，因为：
+- 代码审查看的是实现，实现是对的
+- 测试跑的是模块，模块是通的
+- demo 走的是 demo 的装配，不经过 serve
+
+只有「从 HTTP 面发一个请求」才能暴露。这也是为什么 `tests/test_optional_planes.py`
+**两个方向都测**：配了要生效，不配要不生效。
