@@ -141,14 +141,20 @@ def scenario_11_concurrency() -> None:
         else "process")
     check(f"选中的是本机能达到的最强隔离（{top}）", out["strength"] == top)
 
-    # 强度不足时 fail-closed
-    strict = guarded_sandbox_handler(policy=SandboxPolicy(require_backend="kernel"))
+    # 强度不足时 fail-closed。
+    # **不能拿自动选出来的后端验这件事**：装了 nsjail 的机器（243）本来就到得了
+    # kernel，`require_backend="kernel"` 自然不会被拒 —— 那样这条断言就成了
+    # "宿主装了什么"的镜像，在干净机器上绿、在有 nsjail 的机器上红。
+    # 这里显式用一个只有 process 强度的后端，判据与宿主无关。
+    from plane.sandbox_backends import SubprocessBackend, assert_strength
+    strict = SubprocessBackend(policy=SandboxPolicy())
     try:
-        strict({"argv": ["echo", "x"]}, ExecCtx())
+        assert_strength(strict, SandboxPolicy(require_backend="kernel"))
         denied = False
     except Exception as exc:                                       # noqa: BLE001
         denied = True
-        print(f"  require_backend=kernel → 拒绝: {type(exc).__name__}: {str(exc)[:60]}")
+        print(f"  process 后端 + require_backend=kernel → 拒绝: "
+              f"{type(exc).__name__}: {str(exc)[:60]}")
     check("策略要求更强隔离时不降级执行（fail-closed）", denied)
 
     # ── ⑤ 语义召回 ───────────────────────────────────────────

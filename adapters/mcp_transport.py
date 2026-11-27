@@ -184,22 +184,48 @@ class _ProcessCapture:
         self.process: Any = None
         self._module: Any = None
         self._original: Any = None
+        self._anyio_module: Any = None
+        self._anyio_original: Any = None
 
     def __enter__(self) -> "_ProcessCapture":
+        capture = self
+        # **挂两层**：SDK 的 `_create_platform_compatible_process` 是它自己的一层
+        # 封装，Linux 上实测这层不一定被走到（pid 恒 None，见
+        # `tests/test_mcp_transport.py` 在 64 核 Linux 上的跑法）；真正起进程
+        # 的是 `anyio.open_process`。两层都挂，哪层先到就用哪层。
+        try:
+            import anyio
+
+            _anyio_original = anyio.open_process
+
+            async def _anyio_wrapper(*args: Any, **kwargs: Any) -> Any:
+                proc = await _anyio_original(*args, **kwargs)
+                if capture.process is None:
+                    capture.process = proc
+                return proc
+
+            anyio.open_process = _anyio_wrapper
+            self._anyio_module = anyio
+            self._anyio_original = _anyio_original
+        except Exception:                        # pragma: no cover - 没装 anyio
+            pass
+
         try:
             import mcp.client.stdio as _stdio
         except ImportError:                      # pragma: no cover - 没装 SDK
             return self
         original = getattr(_stdio, "_create_platform_compatible_process", None)
         if original is None:                     # pragma: no cover - SDK 改内部结构
-            logger.warning("mcp.client.stdio 没有 _create_platform_compatible_process，"
-                           "退化为 pid 存活探测")
+            if self._anyio_module is None:
+                logger.warning(
+                    "mcp.client.stdio 没有 _create_platform_compatible_process，"
+                    "且 anyio 也没挂上，退化为 pid 存活探测")
             return self
-        capture = self
 
         async def _wrapper(*args: Any, **kwargs: Any) -> Any:
             proc = await original(*args, **kwargs)
-            capture.process = proc
+            if capture.process is None:
+                capture.process = proc
             return proc
 
         _stdio._create_platform_compatible_process = _wrapper
@@ -213,8 +239,15 @@ class _ProcessCapture:
                 self._module._create_platform_compatible_process = self._original
             except Exception:                    # pragma: no cover - 还原失败不该连带炸
                 logger.warning("还原 mcp.client.stdio spawn 钩子失败", exc_info=True)
+        if self._anyio_module is not None:
+            try:
+                self._anyio_module.open_process = self._anyio_original
+            except Exception:                    # pragma: no cover
+                logger.warning("还原 anyio.open_process 钩子失败", exc_info=True)
         self._module = None
         self._original = None
+        self._anyio_module = None
+        self._anyio_original = None
         return False
 
 
@@ -311,12 +344,25 @@ class StdioMCPConnection:
             self._thread = threading.Thread(
                 target=self._run_loop, name=f"{STDIO_THREAD_PREFIX}-{self.name}",
                 daemon=True)
-            self._thread.start()
 
+            # **钩子必须在起线程之前挂好。**
+            # 反过来（先 `thread.start()`、再 `with capture`）是个竞态：
+            # 子进程在 bootstrap 里 spawn，而 64 核机器上线程可能在
+            # `__enter__` 执行前就已经 spawn 完 —— 于是 `capture.process`
+            # 永远是 None，`pid is None`，`poll()` 恒返回「存活」，
+            # 崩掉/被杀的 server 看起来一直活着。macOS 上线程启动更慢，
+            # 侥幸躲过了这个竞态，所以只有 Linux 上红。
             capture = _ProcessCapture()
             with _SPAWN_LOCK:                   # 见 _SPAWN_LOCK 处注释：起进程串行
                 with capture:
+                    self._thread.start()
                     ready = self._ready.wait(self.startup_timeout_s)
+                    # 句柄在握手前后落定；短暂等一次，别靠"正好赶上"。
+                    deadline = time.monotonic() + 2.0
+                    while capture.process is None and time.monotonic() < deadline:
+                        if self._boot_error is not None:
+                            break
+                        time.sleep(0.005)
             self._process = capture.process
             self._pid = int(getattr(capture.process, "pid", 0) or 0) or None
 

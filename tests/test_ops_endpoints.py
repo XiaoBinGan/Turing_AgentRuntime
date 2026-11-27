@@ -164,6 +164,114 @@ class TestReloadEndpoint(_WithTools):
         self.assertEqual(client.post("/v1/admin/tools/reload").status_code, 404)
 
 
+class TestToolsOnDefaultStartup(_WithTools):
+    """**默认启动路径**（`create_app()` 无参）也要能看见工具表。
+
+    这是上面那些用例的盲区：它们全部 `create_app(gateway=...)` 传替身，
+    而 `built_here=False` 时不包 `StreamingGateway`，私有属性照样读得到。
+    真实启动走的是 `create_app()` → `build_gateway_from_env()` →
+    `StreamingGateway(gateway)`，而 `StreamingGateway.__getattr__` **刻意**
+    拒绝下划线属性（隐私防护），于是：
+
+        app.state.tools = getattr(gateway, "_tool_registry", None)  # → None
+
+    症状：启动日志写着 `sandbox.tool name=sandbox_run`，`/v1/tools` 却回
+    `{"count": 0, "note": "本实例未装配工具表"}` —— 端点撒谎，且撒的是
+    "能力不存在"，运维会去翻 YAML 而不是怀疑代码。
+    `/v1/admin/tools/reload` 同时恒 503。
+
+    修法是在包装**之前**把工具面抓下来。这组用例锁住它。
+    """
+
+    def _default_client(self) -> TestClient:
+        import os
+        from unittest import mock
+        env = {"AGENT_RUNTIME_TOOLS": str(self.yaml),
+               "AGENT_RUNTIME_STREAMING": "1"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            # 注意：**不传 gateway** —— 这才是生产路径
+            return TestClient(serve.create_app(admin_token=self.admin_token))
+
+    def test_tools_visible_without_injected_gateway(self) -> None:
+        body = self._default_client().get("/v1/tools").json()
+        self.assertEqual(body["count"], 2,
+                         f"默认启动下工具表不可见：{body}")
+        self.assertEqual([t["name"] for t in body["tools"]], ["echo", "send"])
+        self.assertNotIn("note", body, "有工具时不该出现'未装配'的说明")
+
+    def test_reload_works_without_injected_gateway(self) -> None:
+        """热加载在默认启动下也要能跑（此前恒 503「工具表未装配」）。"""
+        client = self._default_client()
+        r = client.post("/v1/admin/tools/reload",
+                        headers={"Authorization": f"Bearer {self.admin_token}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["diff"]["total"], 2)
+
+
+class TestCapabilitiesOnDefaultStartup(_WithTools):
+    """`/v1/capabilities` 也曾被同一个包装坑掉，而且症状更严重。
+
+    它读 `app.state.tool_dispatcher` 与 `app.state.tools`。默认启动下两者都是
+    None，于是返回 `{"dispatch": [], "counts": {"tools": 0}}` —— 这不只是"少了个
+    计数"，而是**声称派发器没有任何保障**（approval/scope/policy/redaction 全都
+    申报为空）。能力探测的客户端会据此降级。
+    """
+
+    def _client(self) -> TestClient:
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ,
+                             {"AGENT_RUNTIME_TOOLS": str(self.yaml)}, clear=False):
+            return TestClient(serve.create_app())
+
+    def test_dispatch_capabilities_declared(self) -> None:
+        body = self._client().get("/v1/capabilities").json()
+        self.assertTrue(body["dispatch"], "派发器申报为空 = 说'没有任何保障'")
+        for cap in ("approval", "scope", "policy", "redaction", "timeout"):
+            self.assertIn(cap, body["dispatch"])
+
+    def test_tool_count_matches_tools_endpoint(self) -> None:
+        """两个端点必须对同一份事实给出同一个数字。
+
+        分别断言各自的魔法数是不够的：两边都错成 0 也能同时通过。
+        """
+        client = self._client()
+        listed = client.get("/v1/tools").json()["count"]
+        counted = client.get("/v1/capabilities").json()["counts"]["tools"]
+        self.assertEqual(listed, 2)
+        self.assertEqual(counted, listed, "两个端点各说各话")
+
+
+class TestInfoOnDefaultStartup(_WithTools):
+    """`/v1/info` **不受**这个 bug 影响 —— 它不读 gateway 的私有属性。
+
+    这里锁两件事：
+      1. 它的 `config` 白名单**刻意不含** `AGENT_RUNTIME_TOOLS`（见
+         `docs/design/DEPLOY.md` ⑳：路径可能带部署信息，工具清单的权威来源是
+         `/v1/tools` 与启动日志的 `tools.loaded`）。谁哪天顺手加进去，这条会红，
+         提醒他同步改文档口径 —— 而不是让文档和代码悄悄分叉。
+      2. 它自述的 workflow 段在默认启动下是生效值，不是空壳。
+    """
+
+    def _client(self) -> TestClient:
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ,
+                             {"AGENT_RUNTIME_TOOLS": str(self.yaml)}, clear=False):
+            return TestClient(serve.create_app())
+
+    def test_config_excludes_tools_path_by_design(self) -> None:
+        cfg = self._client().get("/v1/info").json()["config"]
+        self.assertNotIn("AGENT_RUNTIME_TOOLS", cfg,
+                         "白名单口径变了：请同步 docs/design/DEPLOY.md ⑳")
+
+    def test_workflow_section_reports_live_values(self) -> None:
+        wf = self._client().get("/v1/info").json()["workflow"]
+        self.assertTrue(wf["enabled"])
+        self.assertGreater(wf["max_tracked"], 0)
+        self.assertEqual(wf["tracked"], 0)
+
+
 class TestWhoamiDisabled(unittest.TestCase):
     def test_404_with_explanation(self) -> None:
         """状态码仍是 404（能力不存在），但 body 说清为什么、怎么开。

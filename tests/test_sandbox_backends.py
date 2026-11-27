@@ -261,11 +261,53 @@ class TestDockerBackend(unittest.TestCase):
         self.assertIn("docker info failed: exit 1", box.reason)
 
     def test_09b_available_true_when_daemon_ok(self) -> None:
+        """daemon 活着 **且镜像就绪** 才可用。
+
+        镜像那一半必须一起打桩：只桩 `_probe_daemon` 的版本会去问真实
+        daemon 要镜像，于是"有没有 Docker"决定了用例红绿 —— 门禁在
+        装了 CLI 的机器上恒红，在没装的机器上恒绿。
+        """
         box = DockerBackend(which=lambda _name: "/usr/local/bin/docker",
                             policy=SandboxPolicy())
         box._probe_daemon = lambda: (0, "27.0.0")          # noqa: SLF001
+        box._image_present = lambda: True                  # noqa: SLF001
         self.assertTrue(box.available())
         self.assertEqual(box.strength, "container")
+
+    def test_09e_exit_zero_without_output_is_daemon_down(self) -> None:
+        """`docker info --format` 在 daemon 不可达时**退出 0 且无 stdout**。
+
+        只看退出码会把「daemon 没起」写成「daemon ok 但镜像不在」，
+        排查方向直接跑偏。这里桩的是 `_execute`（原始输出），让**真的**
+        `_probe_daemon` 跑一遍判定 —— 桩 `_probe_daemon` 会把它绕过去。
+        """
+        box = DockerBackend(which=lambda _name: "/usr/local/bin/docker",
+                            policy=SandboxPolicy())
+        box._execute = lambda argv, **kw: {                # noqa: SLF001
+            "exit_code": 0, "stdout": "", "stderr": ""}
+        self.assertFalse(box.available())
+        self.assertIn("docker info failed: exit 1", box.reason)
+
+    def test_09f_exit_zero_but_error_text_is_failure(self) -> None:
+        """stdout 空、stderr 有「Cannot connect」→ 失败，理由带原文。"""
+        box = DockerBackend(which=lambda _name: "/usr/local/bin/docker",
+                            policy=SandboxPolicy())
+        box._execute = lambda argv, **kw: {                # noqa: SLF001
+            "exit_code": 0, "stdout": "",
+            "stderr": "Cannot connect to the Docker daemon at unix:///x.sock"}
+        self.assertFalse(box.available())
+        self.assertIn("Cannot connect", box.reason)
+        self.assertIn("exit 1", box.reason)
+
+    def test_09g_real_output_still_counts_as_alive(self) -> None:
+        """有 ServerVersion 输出才算活着 —— 别把正常路径也判死。"""
+        box = DockerBackend(which=lambda _name: "/usr/local/bin/docker",
+                            policy=SandboxPolicy())
+        box._execute = lambda argv, **kw: {                # noqa: SLF001
+            "exit_code": 0, "stdout": "27.5.1\n", "stderr": ""}
+        box._image_present = lambda: True                  # noqa: SLF001
+        self.assertTrue(box.available())
+        self.assertIn("docker info ok", box.reason)
 
     def test_09c_probe_says_yes_without_touching_which(self) -> None:
         """probe 注入优先：不查 which、不跑 docker info（宿主无 docker 也能测）。"""
@@ -353,14 +395,16 @@ class TestDockerBackend(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════
 class TestNsjailBackend(unittest.TestCase):
     def test_12_available_false_without_binary(self) -> None:
-        box = NsjailBackend(which=lambda _name: None, policy=SandboxPolicy())
+        box = NsjailBackend(which=lambda _name: None, policy=SandboxPolicy(),
+                            search_path="")     # 关掉 BASE_ENV 那一层：宿主机
+                                                # 上装了 nsjail 也不能影响结论
         self.assertFalse(box.available())
         self.assertIn("not found in PATH", box.reason)
         self.assertEqual(box.strength, "kernel")
 
     def test_12b_available_true_with_binary(self) -> None:
         box = NsjailBackend(which=lambda _name: "/usr/local/bin/nsjail",
-                            policy=SandboxPolicy())
+                            policy=SandboxPolicy(), search_path="")
         self.assertTrue(box.available())
         self.assertIn("nsjail", box.reason)
 
@@ -384,7 +428,20 @@ class TestNsjailBackend(unittest.TestCase):
         self.assertEqual(host[host.index("--time_limit") + 1], "2")   # 2000ms → 2s
         self.assertEqual(host[host.index("--rlimit_as") + 1], "128")
         self.assertEqual(host[host.index("--rlimit_cpu") + 1], "3")
-        self.assertEqual(host[-3:], ["--", "echo", "hi"])
+        # **`--` 之后必须是绝对路径**：nsjail 走 `execve`，不做 PATH 查找；
+        # 而 `guard_argv()` 白名单比对的是裸名。两条约束叠加后，裸名跑一次
+        # 就是 `execve('echo') failed`。早先这里断言的是裸名 —— 只在装了
+        # nsjail 的机器上才会发现它其实跑不起来。
+        # **不挂宿主根 `/`**：绑 `/` 会把 /proc 与 /sys 一起带回来，
+        # `--disable_proc` / `--iface_no_lo` 的承诺当场作废（243 实测：
+        # `ls /sys/class/net` 能看到宿主全部网卡）。只挂可执行文件所在目录。
+        binds = [host[i + 1] for i, tok in enumerate(host) if tok == "-R"]
+        self.assertTrue(binds, "必须挂载可执行文件所在目录，否则 execve 找不到命令")
+        self.assertNotIn("/", binds, "不能整根挂载：会把 /proc、/sys 一起带回来")
+        self.assertIn("/usr", binds)
+        self.assertEqual(host[-3], "--")
+        self.assertTrue(host[-2].endswith("/echo"), f"应为绝对路径：{host[-2]!r}")
+        self.assertEqual(host[-1], "hi")
         self.assertEqual(got["argv"], ["echo", "hi"])
 
     def test_13b_time_limit_rounds_up(self) -> None:
@@ -472,12 +529,19 @@ class TestBackendSelector(unittest.TestCase):
         """无 probe 时理由来自真实探测：which 失败 / docker info 失败。"""
         sel = BackendSelector(prefer=("nsjail", "docker"))
         rows = sel.report(refresh=True)
-        self.assertEqual(rows[0]["reason"], "not found in PATH")
-        self.assertFalse(rows[0]["available"])
+        # 装了 nsjail 的机器上它应当是 available=True —— 断言只在"没装"时成立，
+        # 否则这条用例会变成"宿主机装了什么"的镜像（243 上装了 nsjail 就红）。
+        if not rows[0]["available"]:
+            self.assertEqual(rows[0]["reason"], "not found in PATH")
+        else:
+            self.assertIn("found in PATH", rows[0]["reason"])
         docker_row = rows[1]
-        if not docker_row["available"]:      # 本机无 daemon 的典型分支
-            self.assertTrue(docker_row["reason"].startswith("docker info failed")
-                            or docker_row["reason"] == "not found in PATH")
+        if not docker_row["available"]:      # 三种真实分支都要有可读理由
+            self.assertTrue(
+                docker_row["reason"].startswith("docker info failed")
+                or docker_row["reason"] == "not found in PATH"
+                or docker_row["reason"].startswith("daemon ok but image"),
+                f"未预期的理由：{docker_row['reason']!r}")
 
     def test_17c_strength_rank_is_monotonic(self) -> None:
         self.assertLess(strength_rank("none"), strength_rank("process"))

@@ -275,6 +275,13 @@ class TestMilvusRemotePath(unittest.TestCase):
 
     def test_local_file_uri_is_recognised(self):
         """`.db` 结尾走 milvus-lite（进程内）；其它走远程客户端。"""
+        try:
+            import pymilvus  # noqa: F401
+        except ImportError:
+            # milvus-lite 随 pymilvus 一起装；没装就别报错 —— 这条用例验的是
+            # 后端对 URI 的判定，不是"本机装了 SDK"。早先它直接 Error，
+            # 让"干净机器上的全量跑"多一条噪音失败。
+            self.skipTest("pymilvus 未安装（milvus-lite 路径不可用）")
         from plane.vector_backends import MilvusVectorBackend
         import tempfile, os
         d = tempfile.mkdtemp(prefix="ml-remote-")

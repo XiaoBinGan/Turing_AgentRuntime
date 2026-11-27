@@ -887,9 +887,16 @@ class TestRESPKV(unittest.TestCase):
         # 而钉了 RESP2 的 RESPKV 毫发无伤 —— 这就是钉版本的现实理由。
         self.redis.data.reject_hello = True
         try:
-            with self.assertRaises(redis.exceptions.RedisError):
+            # **库版本差异**：redis-py 8.1 在这里抛 `ResponseError`（连接直接失败），
+            # 8.2 起会静默降级到 RESP2 并跑通。两种都算"客户端自己处理了"，
+            # 本仓的契约只有一条：钉了 RESP2 的 `RESPKV` 在服务端不支持 HELLO 时
+            # 毫发无伤。断言写死其中一种会在升级依赖时误报。
+            try:
                 self.raw().ping()
-            self.assertTrue(self.kv.ping())
+            except redis.exceptions.RedisError:
+                pass
+            self.assertTrue(self.kv.ping(),
+                            "RESPKV 钉 RESP2，服务端拒绝 HELLO 也应可用")
         finally:
             self.redis.data.reject_hello = False
 

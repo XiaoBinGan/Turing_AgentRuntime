@@ -65,13 +65,186 @@ called. The resources path handles this explicitly rather than changing
 
 ### Tests
 
-2301, up from 2282. `tests/test_optional_planes.py` covers all five in **both
+2308, up from 2282. `tests/test_optional_planes.py` covers all five in **both
 directions** — configured means active, unconfigured means inert — plus the
 misconfiguration cases that must raise.
 
 That two-way check is the point. This defect class is invisible to code review
 (the implementation is correct), to unit tests (the module works), and to the demo
 (it has its own wiring). Only a request through the HTTP surface reveals it.
+
+### What the first real call found
+
+The wiring above was measured before it was believed. All five planes logged
+`enabled`, `/v1/tools` listed four new tools, and then the calls were made.
+Three things came out of that, all fixed here.
+
+**Knowledge was registered and unusable.** `serve.py` kept the `KnowledgeBase`
+itself, but `retrieve()` lives on the read-only facade `KnowledgeReader`
+(`kb.reader()`), by design — INV-11 says the handle the agent gets has no
+`add` / `retire` on it. So `search_knowledge` appeared in `/v1/tools` with a
+correct schema and raised `AttributeError` on the first query. Every startup
+assertion passed because startup really was fine.
+
+That is worse than not wiring the plane. An absent tool makes the model fall back
+to reasoning; a tool that always raises burns steps and reads as a runtime fault.
+
+**The test shape was the reason it survived.** All 19 cases in
+`test_optional_planes.py` asserted that registration happened — a log event, a
+name in `registry.names()`, a chunk count. None called the function. Four cases
+now do, one per plane, with a negative control: reverting `kb.reader()` to `kb`
+turns `test_tool_actually_retrieves` red with the exact `AttributeError`.
+
+**The Docker probe trusted an exit code that lies.** `_probe_daemon()` ran
+`docker info --format '{{.ServerVersion}}'` and read the exit code. On Docker
+Desktop 27.5.1 with the daemon stopped, that command exits **0**, writes nothing
+to stdout, and puts "Cannot connect to the Docker daemon" on stderr — while plain
+`docker info` and `docker version` exit 1. The availability verdict stayed
+correct only because the image check behind it also failed, but the reason
+string said "daemon ok but image 'python:3.11-alpine' not present", sending the
+reader to `docker pull` when the daemon was down. Exit 0 with empty stdout now
+counts as failure, and the reason carries the daemon's own message.
+
+### `/v1/tools` was empty in production
+
+Reported by the downstream agent, and correct. `app.state.tools` was read with
+`getattr(gateway, "_tool_registry", None)` **after** the gateway had been wrapped
+in `StreamingGateway`, whose `__getattr__` refuses underscore names by design
+(private state does not leak through the decorator). On the default startup path
+that `getattr` therefore always returned `None`:
+
+    {"tools":[],"count":0,"note":"本实例未装配工具表"}
+
+while the same process logged `sandbox.tool name=sandbox_run`. The endpoint did
+not merely fail — it reported "no tools configured", which sends an operator to
+the YAML. `/v1/admin/tools/reload` was dead the same way, answering 503
+「工具表未装配」 on every call.
+
+The test blind spot was structural: all 34 `create_app(...)` call sites either
+inject `gateway=` (10 of them, so `built_here=False` and no `StreamingGateway`
+is wrapped) or never touch `/v1/tools`. The three default-startup cases check
+identity and SSE framing. So the one path that ships was the one path unread.
+
+The tool face is now captured **before** wrapping.
+
+`/v1/capabilities` was hit by the same line, and the damage was worse than a
+zero: it reported `{"dispatch": [], "counts": {"tools": 0}}`, i.e. a dispatcher
+declaring *no* guarantees — no approval, no scope check, no policy, no
+redaction. A capability-probing client would downgrade on that. `/v1/info` is
+not affected: it reads `app.state` directly and never touches the gateway's
+private attributes. Its `config` whitelist still excludes `AGENT_RUNTIME_TOOLS`
+on purpose (paths are deployment detail; the authoritative source is
+`/v1/tools` and the `tools.loaded` log line) — a test now pins that omission so
+code and docs cannot drift apart silently.
+
+Four cases cover the default-startup path: tools are listed, hot reload returns
+200, dispatch declares its eleven capabilities, and `/v1/tools` agrees with
+`/v1/capabilities` on the count (asserting each endpoint against its own magic
+number would pass even if both were wrong). Reverting the capture turns four
+red.
+
+ Two cases pin it: tools are
+visible on a default-startup client, and hot reload returns 200 instead of 503.
+Reverting the two-line capture turns both red.
+
+### Everything optional, verified on 243
+
+The two machines disagreed on four more things, all of them host-dependent
+behaviour dressed up as portability:
+
+**`NsjailBackend` could not execute anything.** `build_argv()` emitted
+`nsjail -- ... echo hi`; nsjail runs the child through `execve`, which does not
+search `PATH`, while `guard_argv()` requires a bare command name. So the
+"kernel-grade isolation backend" was `available() == True` and failed every run
+with `execve('echo'): No such file or directory` — a defect only a machine with
+nsjail installed can see. Resolving `argv[0]` through `BASE_ENV["PATH"]` fixed
+it; the mounts are the minimal set (`/bin`, `/usr`, `/lib`, `/lib64`,
+`/etc/ld.so.cache`, `/dev/null`) rather than `-R /`, because binding the host
+root brings `/proc` and `/sys` back and cancels `--disable_proc` /
+`--iface_no_lo` (243: `ls /sys/class/net` listed every host interface).
+
+**`auto` picked a backend it could not build.** `VECTOR_BACKEND` unset means
+`auto`, which chooses by `available()` alone — so a machine with `pymilvus`
+installed selects Milvus, which then refuses to build without `VECTOR_DIM`, and
+the default configuration returns no backend at all. Machines without pymilvus
+were fine. `auto` now skips Milvus when no dimension is given.
+
+**The demo asserted host state.** "策略要求更强隔离时不降级执行" required
+`require_backend="kernel"` to be denied — true only where nsjail is absent. On
+243 the requirement is satisfiable, the assertion failed, and the demo reported
+79/80. It now checks fail-closed against an explicit `SubprocessBackend`, which
+is the property worth testing and is host-independent.
+
+**Nsjail discovery depended on who launched the process.** `shutil.which` read
+the ambient `PATH`; an ssh non-login shell has no `/usr/local/bin`, so an
+installed nsjail reported `not found in PATH` and the selector silently fell
+back to subprocess. Discovery now uses `BASE_ENV`'s fixed path, overridable via
+`search_path=` for tests.
+
+Verified on 243: 2,317 tests green, 11/11 demo scenarios (80/80 assertions),
+55 HTTP cases. Optional backends exercised for real — nsjail (`strength=kernel`,
+`/proc` and `/sys` unreadable, read-only root), Milvus v2.5.4 cluster (etcd +
+MinIO, 46 contract cases), Langfuse v2 (HTTP 207, 4 events, read back with 3
+observations), Docker 19.03 container backend, Redis 5.0.7 distributed
+blackboard (one CAS winner across two replicas).
+
+Cross-machine load, 243 → Mac over the VPN (25 ms RTT): single request
+33-48 ms vs 1.7 ms loopback; 32 concurrency 359 RPS (p50 78 ms) vs Mac's
+152 RPS (p50 208 ms). The Mac number is *lower* because the load generator
+shares its 10 cores with the server — throughput here measures the client, and
+only the latency comparison says anything about the network.
+
+### A second pass, on a 64-core Linux box
+
+The suite had only ever run on one machine. Re-run on 243 (Ubuntu 20.04, 64
+cores, Python 3.13, Docker 19.03, real Redis 5.0.7) it went red in places macOS
+cannot reach, and the four defects below were all invisible at home.
+
+**The default prompt was a stub.** `build_gateway_from_env` passed
+`template=None` into `PromptBuilder`; the constructor default only applies when
+the argument is omitted, so every render raised `AttributeError: 'NoneType'
+object has no attribute 'system'` and `core/loop.py` swallowed it into
+
+    [builder 失败：AttributeError: ...] 请基于 history 继续。
+
+88 bytes. No goal, no history, no tools, no memory. HTTP said 200/DONE and the
+audit log looked complete. Nothing in 2,300 tests read the prompt produced by
+the *default* assembly — `demo/` brings its own builder, `tests/test_loop.py`
+news its own. Now `template or DEFAULT_TEMPLATE`, with two cases pinning it.
+
+**Factory functions were treated as instances.** `_instantiate()` returned any
+callable that had a `__dict__` unchanged, and functions have one — so
+`AGENT_RUNTIME_PROMPT_TEMPLATE='mod:make'`, the shape the docs recommend,
+handed the builder a function object. Every extension point (template, profile,
+router, skills, planner) was affected. Functions and partials are now called.
+
+**The blackboard never used Redis.** `AGENT_RUNTIME_BLACKBOARD=1` with
+`AGENT_RUNTIME_KV=redis` still produced an in-process `Blackboard`: the code
+asked `"kv" in locals()` inside `build_gateway_from_env`, which has no `kv`
+local (it lives in `_dep_specs()` and `main()`). Single-process CAS looked
+perfect, the log said `blackboard.enabled`, and two replicas would have
+silently kept separate state. Now the KV is built there, and an unreachable
+Redis raises instead of degrading.
+
+**MCP process handles were captured by luck.** `start()` did
+`thread.start()` *then* entered `_ProcessCapture`. On a 64-core machine the
+child is spawned before the hook installs, so `pid` was `None`, `poll()` always
+answered "alive", and a crashed server was indistinguishable from a running
+one. Fixed by installing the hook first; also wraps `anyio.open_process` as a
+second net. On Linux this was also the 15-second `stop()` hang.
+
+Verified on 243: 2,317 tests, 0 failures, 59 skipped (optional backends), 66s.
+Two test cases had been encoding host state instead of isolating it —
+`test_09b` stubbed `_probe_daemon` but let `_image_present` hit the real daemon,
+and `test_17b` accepted only two of the three real reason shapes; the Milvus
+case errored instead of skipping when `pymilvus` was absent, and the RESP
+handshake case assumed redis-py 8.1 error behaviour. All four are hermetic now.
+
+Two test cases had been encoding that host state instead of isolating it:
+`test_09b` stubbed `_probe_daemon` but let `_image_present` hit the real daemon,
+`test_17b` accepted only two of the three real reason shapes. Both are hermetic
+now, and the suite is green on a machine with the Docker CLI installed and no
+daemon running — the configuration that made the gate red.
 
 ---
 

@@ -500,19 +500,30 @@ def available_backends() -> dict[str, dict]:
 
 
 def make_vector_backend(kind: str = "auto", **kw) -> Any:
-    """按名字造后端。`auto` 按 memory → qdrant → milvus 的顺序挑第一个可用的。
+    """按名字造后端。`auto` 按 qdrant → milvus → memory 的顺序挑第一个**造得出来**的。
+
+    `auto` 的语义是"挑一个能用"，不是"挑一个装了库"：milvus 建集合必须给
+    `dim`，没给就必然在构造时抛错。早先的写法只看 `available()`（库装了就算），
+    于是**默认配置在装了 pymilvus 的机器上直接失败**（`VECTOR_BACKEND` 未设 →
+    auto → 挑中 milvus → 抛"必须显式给 dim" → 后端为 None），而没装 pymilvus 的
+    机器一切正常 —— 默认行为由"机器上装了什么"决定，正是本项目反复踩的那类坑。
+    现在缺 `dim` 时跳过 milvus。
 
     返回的对象一定有 `info()`；不可用时会**抛错并说明原因**，
     而不是静默退化成内存后端（那会让"配置了 milvus 实际跑内存"无人知晓）。
     """
     k = (kind or "auto").strip().lower()
     if k == "auto":
-        for cand in ("qdrant", "milvus", "memory"):
-            if available_backends()[cand]["available"]:
-                k = cand
-                break
-        else:
-            k = "memory"
+        avail = available_backends()
+        has_dim = bool(kw.get("dim"))
+        k = "memory"
+        for cand in ("qdrant", "milvus"):
+            if not avail[cand]["available"]:
+                continue
+            if cand == "milvus" and not has_dim:
+                continue                     # 没维度的 milvus 造不出来，别选它
+            k = cand
+            break
     ctor = _CTORS.get(k)
     if ctor is None:
         raise VectorBackendError(

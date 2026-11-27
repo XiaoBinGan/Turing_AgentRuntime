@@ -57,6 +57,28 @@ def _build(extra_env: dict, tmp_extra: dict | None = None):
         return serve.build_gateway_from_env(logger=log), log
 
 
+def _ctx(scopes: tuple[str, ...] = ("tool.read", "tool.write", "resource.read",
+                                  "knowledge.read", "sandbox.run",
+                                  "blackboard.read")):
+    """最小 ExecCtx：直接调用注册函数时用，跳过 Dispatcher 的策略层。"""
+    from contracts import ExecCtx, Principal
+    return ExecCtx(principal=Principal(user_id="u_t", tenant="t",
+                                       scopes=frozenset(scopes)))
+
+
+def _call(gw, name: str, args: dict):
+    """按名字取注册的实现并**真的调用**。
+
+    只断言日志/`names()` 会漏掉一类缺陷：工具在表里、却一调用就抛。
+    这里刻意不走 Dispatcher，只验证「实现与注册时的名字对得上」。
+    """
+    registry = getattr(gw, "_tool_registry")
+    entry = registry.get(name)
+    assert entry is not None, f"工具未注册: {name}"
+    _manifest, fn = entry
+    return fn(args, _ctx())
+
+
 class _ModuleFixture(unittest.TestCase):
     """写一个临时模块，供 `module:attr` 加载。"""
 
@@ -122,6 +144,20 @@ def make():
         self.assertEqual(tools["count"], 1)
         self.assertTrue(tools["names"][0].startswith("read_"))
 
+    def test_tool_actually_reads(self) -> None:
+        """注册的名字要能真的读回内容，不是只在表里挂个名字。"""
+        self.write("_res_call", '''
+from contracts import ResourceRef
+def make():
+    ref = ResourceRef(uri="git://repo/deploy.md", name="deploy",
+                      mime="text/markdown")
+    return [(ref, lambda uri: "# 部署\\n回滚：rollout undo")]
+''')
+        gw, _log = _build({"AGENT_RUNTIME_RESOURCES": "_res_call:make"})
+        out = _call(gw, "read_git_repo_deploy.md", {})
+        self.assertEqual(out["uri"], "git://repo/deploy.md")
+        self.assertIn("rollout undo", out["content"])
+
     def test_bad_factory_shape_raises(self) -> None:
         """工厂返回非列表 → 报错，不静默跳过。"""
         self.write("_res_bad", "def make():\n    return 42\n")
@@ -166,6 +202,33 @@ def make():
         with self.assertRaises(RuntimeError):
             _build({"AGENT_RUNTIME_KNOWLEDGE": "_kn_bad:make"})
 
+    def test_tool_actually_retrieves(self) -> None:
+        """`search_knowledge` 必须能真的召回，不是注册完就完事。
+
+        这条用例是在补一个真实缺陷：装配时存的是 `KnowledgeBase`，而
+        `retrieve` 只长在只读门面 `KnowledgeReader`（`kb.reader()`）上。
+        结果是 `/v1/tools` 看得见 `search_knowledge`，模型一调用就
+        `AttributeError` —— 只断言 `knowledge.enabled` / `names()` 的用例
+        全绿也发现不了，因为启动阶段一切正常。
+        """
+        self.write("_kn_call", '''
+from plane.knowledge import Document
+def make():
+    return [
+        Document(doc_id="oom", title="OOM 处置",
+                 text="容器 OOMKilled 先看 Last State，再核对 memory limit 与内存上限。"),
+        Document(doc_id="rel", title="发布", text="发布流程先回归再灰度。"),
+    ]
+''')
+        gw, _log = _build({"AGENT_RUNTIME_KNOWLEDGE": "_kn_call:make"})
+        out = _call(gw, "search_knowledge", {"query": "OOMKilled 内存上限"})
+        self.assertEqual(out["count"], 1, "必须命中且只命中相关的一条")
+        self.assertEqual(out["hits"][0]["doc_id"], "oom")
+        self.assertGreater(out["hits"][0]["score"], 0)
+        # 空 query 是调用方错误，不是"检索不到"
+        with self.assertRaises(ValueError):
+            _call(gw, "search_knowledge", {"query": "  "})
+
 
 class TestSandboxTool(unittest.TestCase):
     """`AGENT_RUNTIME_SANDBOX_TOOL=1` 把沙箱注册成 T2 工具。"""
@@ -191,6 +254,17 @@ class TestSandboxTool(unittest.TestCase):
             _build({"AGENT_RUNTIME_SANDBOX_TOOL": "1",
                     "AGENT_RUNTIME_SANDBOX_TIER": "9"})
 
+    def test_tool_actually_runs(self) -> None:
+        """注册的 `sandbox_run` 要能真的执行一条命令并回传 stdout。
+
+        T1 只为测试降档；默认 T2 的行为由 `test_default_is_t2` 守住。
+        """
+        gw, _log = _build({"AGENT_RUNTIME_SANDBOX_TOOL": "1",
+                           "AGENT_RUNTIME_SANDBOX_TIER": "1"})
+        out = _call(gw, "sandbox_run", {"argv": ["echo", "hi"]})
+        self.assertEqual(out["exit_code"], 0)
+        self.assertEqual(out["stdout"].strip(), "hi")
+
 
 class TestBlackboard(_ModuleFixture):
     """`AGENT_RUNTIME_BLACKBOARD=1` 提供多 agent 共享状态。"""
@@ -207,6 +281,41 @@ class TestBlackboard(_ModuleFixture):
         _gw, log = _build({"AGENT_RUNTIME_BLACKBOARD": "1"})
         self.assertEqual(log.has("blackboard.tools")["names"],
                          ["blackboard_read"])
+
+    def test_explicit_redis_unreachable_raises(self) -> None:
+        """点名 `AGENT_RUNTIME_KV=redis` 却连不上 → 报错，不静默退回进程内。
+
+        早先这里恒为 in-process：`build_gateway_from_env` 里根本没有 `kv`
+        这个局部变量（它只在 `_dep_specs()` / `main()` 里存在），
+        `"kv" in locals()` 恒假。症状是"配了 redis，两个副本各写各的"——
+        单进程测不出来，跨副本才发现，而那时已经在生产上了。
+        """
+        with self.assertRaises(RuntimeError) as caught:
+            _build({"AGENT_RUNTIME_BLACKBOARD": "1",
+                    "AGENT_RUNTIME_KV": "redis",
+                    "AGENT_RUNTIME_REDIS_PORT": "6399"})
+        self.assertIn("不可达", str(caught.exception))
+
+    def test_distributed_mode_when_kv_is_shared(self) -> None:
+        """KV 可用时走 `DistributedBlackboard`（CAS 由服务端保证）。"""
+        from core.kv import InMemoryKV
+
+        class _Fake:
+            @staticmethod
+            def info() -> dict:
+                return {"backend": "kv", "shared": True}
+
+        with mock.patch.object(serve, "_make_kv", lambda _e: _Fake()):
+            _gw, log = _build({"AGENT_RUNTIME_BLACKBOARD": "1",
+                               "AGENT_RUNTIME_KV": "redis"})
+        self.assertEqual(log.has("blackboard.enabled")["mode"], "distributed")
+
+    def test_read_tool_answers_for_missing_key(self) -> None:
+        """缺键是 `found=False`，不是抛异常 —— 模型要能继续往下走。"""
+        gw, _log = _build({"AGENT_RUNTIME_BLACKBOARD": "1"})
+        out = _call(gw, "blackboard_read", {"key": "plan.step1"})
+        self.assertEqual(out["key"], "plan.step1")
+        self.assertFalse(out["found"])
 
 
 class TestNoRegression(unittest.TestCase):

@@ -610,8 +610,19 @@ class DockerBackend(_BaseBackend):
             return 124, "docker info timeout"
         except (SandboxUnavailable, OSError) as exc:
             return 127, str(exc)
-        return int(raw.get("exit_code", -1)), str(
-            raw.get("stderr") or raw.get("stdout") or "")
+        code = int(raw.get("exit_code", -1))
+        out = str(raw.get("stdout") or "").strip()
+        err = str(raw.get("stderr") or "").strip()
+        # **退出码 0 不等于 daemon 活着**：带 `--format` 时 Docker CLI 在
+        # daemon 不可达的情况下照样退出 0、stdout 为空、错误只落在 stderr
+        # （macOS Docker Desktop 27.5.1 实测；同机不带 --format 的
+        # `docker info` / `docker version` 才老老实实退 1）。
+        # 只看退出码的后果是把「daemon 没起」误报成
+        # 「daemon ok 但镜像不在」，把排查引向错误的方向 —— 报错文案错，
+        # 比没有文案更贵。
+        if code == 0 and not out:
+            return 1, (err or "docker info 退出 0 但无输出（daemon 不可达）")
+        return code, (err or out)
 
     # ── argv 构造（可单独测，不执行）──────────────────────────
     def build_argv(self, argv: Sequence[str], *, cwd: str | None = None,
@@ -664,10 +675,15 @@ class NsjailBackend(_BaseBackend):
     def __init__(self, *, policy: SandboxPolicy | None = None,
                  probe: Callable[[str], bool] | None = None,
                  which: Callable[[str], str | None] | None = None,
-                 binary: str = "nsjail") -> None:
+                 binary: str = "nsjail",
+                 search_path: str | None = BASE_ENV["PATH"]) -> None:
         super().__init__(policy=policy, probe=probe)
         self._which = which if which is not None else shutil.which
         self.binary = binary
+        #: 查找 `binary` 的 PATH。默认用 `BASE_ENV` 的**固定** PATH，不随
+        #: 调用方进程的 PATH 漂移（ssh 非登录 shell 里没有 /usr/local/bin，
+        #: 会让"装了 nsjail"变成"not found in PATH"）。测试传 `""` 关掉这一层。
+        self.search_path = search_path
         self.last_host_argv: list[str] = []
 
     def available(self) -> bool:
@@ -676,7 +692,14 @@ class NsjailBackend(_BaseBackend):
         if self.probe is not None:
             ok = bool(self.probe(self.name))
             return self._note(ok, "probe says yes" if ok else "probe says no")
-        path = self._which(self.binary)
+        # **先按 `BASE_ENV` 的确定 PATH 找，再退回调用方进程的 PATH。**
+        # 只用进程 PATH 会让结论取决于"谁启动的进程"：ssh 非登录 shell 的 PATH
+        # 里没有 /usr/local/bin，于是机器上明明装了 nsjail（`只用 sudo` 装到
+        # /usr/local/bin）却报 `not found in PATH`，后端静默降级成 subprocess。
+        path = None
+        if self.search_path:
+            path = shutil.which(self.binary, path=self.search_path)
+        path = path or self._which(self.binary)
         if not path:
             return self._note(False, "not found in PATH")
         return self._note(True, f"found in PATH（{path}；未探测 userns/root 权限）")
@@ -697,6 +720,23 @@ class NsjailBackend(_BaseBackend):
             "--rlimit_as", str(int(pol.max_memory_mb)),    # nsjail 单位是 MiB
             "--rlimit_cpu", str(int(pol.max_cpu_seconds)),
         ]
+        # **只挂"跑命令需要的最小集合"，不挂 `/`。**
+        # nsjail 新建 mount namespace，里面默认是空的 —— 什么都不挂时白名单里的
+        # 命令一个都不存在，每次 run 都是
+        #   `execve('/usr/bin/echo') failed: No such file or directory`
+        # 而 `available()` 仍为 True（它只查 PATH），于是"内核级隔离后端可用"
+        # 这件事从头到尾没被真跑过。
+        # 但**不能图省事挂 `-R /`**：宿主根的 bind mount 会把 `/proc` 和
+        # `/sys` 一起带回来，`--disable_proc` 与 `--iface_no_lo` 的承诺当场作废
+        # （`ls /sys/class/net` 能看见宿主所有网卡、`cat /proc/self/status`
+        # 能看见宿主进程表）。只读挂载可执行文件所在的最小目录。
+        for _root in ("/bin", "/usr", "/lib", "/lib64", "/etc/ld.so.cache"):
+            if os.path.exists(_root):
+                cmd.extend(["-R", _root])
+        cmd.extend([
+            # `/dev/null` 之类：不给的话很多程序会报错，但不挂整个 /dev
+            "-R", "/dev/null",
+        ] if os.path.exists("/dev/null") else [])
         # 网络：nsjail 默认新建 netns（`--disable_clone_newnet` 反而会共享宿主网络，
         # 语义正好相反，不传）。`--iface_no_lo` 连 loopback 都不给 → 打不到本机服务。
         # 只有显式 allow_network=True 时才放开 loopback。
@@ -707,7 +747,18 @@ class NsjailBackend(_BaseBackend):
         for key, value in sorted((env or {}).items()):
             cmd.extend(["--env", f"{key}={value}"])
         cmd.append("--")
-        cmd.extend(list(argv))
+        # **nsjail 用 `execve` 执行，不做 PATH 查找。**
+        # 而 `guard_argv()` 要求的恰恰是"裸命令名"（白名单比对的是 basename），
+        # 于是两条约束叠加起来，`run(["echo", ...])` 必然得到
+        #   `execve('echo') failed: No such file or directory`
+        # —— 后端"可用"却永远跑不起来，且只有真装了 nsjail 的机器才看得见。
+        # 这里只把 argv[0] 换成绝对路径，白名单校验仍在 `guard_argv` 里做。
+        resolved = list(argv)
+        if resolved:
+            exe = shutil.which(str(resolved[0]), path=BASE_ENV["PATH"])
+            if exe:
+                resolved[0] = exe
+        cmd.extend(resolved)
         return cmd
 
     def run(self, argv: Sequence[str], *, cwd: str | None = None,

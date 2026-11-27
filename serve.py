@@ -184,6 +184,7 @@ import asyncio
 import contextlib
 import dataclasses
 import fnmatch
+import functools
 import importlib.util
 import json
 import math
@@ -195,6 +196,7 @@ import signal
 import sys
 import threading
 import time
+import types
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -3468,6 +3470,22 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
                         None)
         gateway = build_gateway_from_env(logger=logger, store=gw_store,
                                          metrics=metrics)
+    # **工具面必须在包装之前抓下来。**
+    # `StreamingGateway.__getattr__` 刻意拒绝下划线开头的属性（隐私防护，见
+    # core/streaming.py），所以一旦包上，`getattr(gateway, "_tool_registry")`
+    # 只会拿到 default —— 于是真实启动（`create_app()` 无参路径）里
+    # `app.state.tools` 恒为 None：
+    #   * `/v1/tools` 返回 `{"count": 0, "note": "本实例未装配工具表"}`，
+    #     而启动日志里 `sandbox.tool name=sandbox_run` 明明已经装配 —— 端点
+    #     在**撒谎**，且撒的是"能力不存在"这种最难查的谎；
+    #   * `/v1/admin/tools/reload` 恒 503「工具表未装配」。
+    # 注入 gateway 的测试路径（`built_here=False`）不包 Streaming，所以一直绿 ——
+    # 21 处 `create_app(...)` 里 8 处传替身、3 处默认启动，默认启动那 3 处
+    # 只测身份校验和 SSE，没有一处读 `/v1/tools`。
+    _tool_registry = getattr(gateway, "_tool_registry", None)
+    _tool_dispatcher = getattr(gateway, "_tool_dispatcher", None)
+    _tool_loader_env = getattr(gateway, "_tool_loader_env", None)
+
     # 真增量流式：在**观测层里面**包（顺序很重要）。
     #
     #   InstrumentedGateway(StreamingGateway(真实 Gateway))
@@ -3577,9 +3595,9 @@ def create_app(*, gateway: Any = None, metrics: Any = None,
     app.state.signal_driver = None
     # 工具表从 gateway 取（装配在 `build_gateway_from_env` 那层）。
     # 注入的假 gateway 没有这些属性 → 保持 None，端点优雅降级成空表。
-    app.state.tools = getattr(gateway, "_tool_registry", None)
-    app.state.tool_dispatcher = getattr(gateway, "_tool_dispatcher", None)
-    app.state.tool_loader_env = getattr(gateway, "_tool_loader_env", {}) or {}
+    app.state.tools = _tool_registry
+    app.state.tool_dispatcher = _tool_dispatcher
+    app.state.tool_loader_env = _tool_loader_env or {}
 
     # ── Workflow 显式入口（B）的执行器 ──
     # **总是装配**（默认开启）：`/v1/workflows` 是确定性流程的正式入口，
@@ -4597,16 +4615,36 @@ def load_extension(spec: str | None, *, kind: str, logger: Any = None) -> Any:
 
 
 def _instantiate(obj: Any, *args: Any, **kw: Any) -> Any:
-    """扩展点可能是类，也可能已经是实例/工厂函数。"""
+    """扩展点可能是类，也可能是工厂函数，也可能已经是实例。
+
+    **普通函数必须当工厂调用**。早先的判据是 "callable 且没有 `__dict__` 才调用"，
+    而 Python 的函数对象**有** `__dict__` —— 于是 `module:make_template` 这种
+    文档里推荐的写法拿到的是函数本身，不是它返回的对象。症状极隐蔽：
+
+      * `/v1/tools`、启动日志、`/v1/capabilities` 全部正常（装配确实"成功"了）；
+      * 真用起来才炸 —— 例：`AGENT_RUNTIME_PROMPT_TEMPLATE` 拿到函数后
+        `template.system` 抛 AttributeError，被 `core/loop.py` 吞成一句
+        `[builder 失败：...] 请基于 history 继续。`，模型从此看不到上下文。
+
+    所以判据改成"**实例**才原样返回，其余 callable（类/函数/可调用对象）一律调用"。
+    实例的识别用 `types`：函数、方法、内建函数都是工厂；其余 callable 若是
+    某个类的实例（有 `__dict__` 或 `__slots__`），仍然当实例。
+    """
     if obj is None:
         return None
+    if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType,
+                        types.MethodType, functools.partial)):
+        try:
+            return obj(*args, **kw)
+        except TypeError:
+            return obj()
     if isinstance(obj, type):
         try:
             return obj(*args, **kw)
         except TypeError:
             return obj()
-    if callable(obj) and not hasattr(obj, "__dict__"):
-        return obj()
+    # 剩下的 callable 实例（有 __dict__/__slots__ 的对象）按实例处理：
+    # 它们往往自己就是实现（例如带 `complete()` 的 LLM adapter）。
     return obj
 
 
@@ -4645,7 +4683,7 @@ def build_gateway_from_env(*, logger: Any = None,
     e = dict(os.environ if env is None else env)
     try:
         from adapters.llm_mock import CallableLLM
-        from builder import PromptBuilder
+        from builder import DEFAULT_TEMPLATE, PromptBuilder
         from core.loop import Loop
         from plane.governance import Governance, InputGuard, OutputGuard, RBAC
         from plane.tool import Dispatcher, ToolRegistry
@@ -4691,7 +4729,16 @@ def build_gateway_from_env(*, logger: Any = None,
                         other_chars_per_token=getattr(profile, "other_chars_per_token", 0))
         except Exception:                   # noqa: BLE001 - 观测面 fail-open
             pass
-    builder = PromptBuilder(total_tokens=prompt_tokens, template=template,
+    # **`template or DEFAULT_TEMPLATE`：不配模板时必须落到内置模板。**
+    # `PromptBuilder(template=None)` 不会退回默认值（默认值是参数缺省才生效），
+    # 构造出的 builder 每次渲染都在 `template.system` 上抛 AttributeError，
+    # 而 `core/loop.py` 把它吞成一句
+    #   `[builder 失败：AttributeError: ...] 请基于 history 继续。`
+    # —— 表现是**模型收到的 prompt 只有 88 字节、连 goal 都不在里面**，
+    # 而 HTTP 面一切正常（200/DONE）。这条路径没有用例覆盖：
+    # demo 自带 builder，单测用自己的，默认装配反而没人验。
+    builder = PromptBuilder(total_tokens=prompt_tokens,
+                            template=template or DEFAULT_TEMPLATE,
                             profile=profile)
     registry = ToolRegistry()
 
@@ -4904,7 +4951,13 @@ def build_gateway_from_env(*, logger: Any = None,
             # `rebuild()` 才真正建索引；不调它 `retrieve` 会拿到空结果。
             # 早先 demo 里就踩过：add 完不 rebuild，检索永远 0 命中。
             kb.rebuild()
-            knowledge_rt = kb
+            # **存 `reader()`，不是 `kb` 本身**：`KnowledgeBase` 上没有
+            # `retrieve` —— 检索方法长在只读门面 `KnowledgeReader` 上
+            # （INV-11：Agent 侧拿到的句柄不应该有 add/retire）。
+            # 早先这里存的是 `kb`，表现是「工具注册成功、`/v1/tools` 看得见、
+            # 一调用就 AttributeError」—— 比没接线更难查，因为症状出现在
+            # 第一次真实检索，而不是启动。
+            knowledge_rt = kb.reader()
             knowledge_docs = tuple(docs)
             if logger is not None:
                 logger.info("knowledge.enabled", docs=len(docs),
@@ -4950,8 +5003,28 @@ def build_gateway_from_env(*, logger: Any = None,
     blackboard_rt = None
     if _truthy(e.get("AGENT_RUNTIME_BLACKBOARD")):
         try:
-            _kv = kv if "kv" in locals() and kv is not None else None
-            if _kv is not None and not isinstance(_kv, _Unavailable):
+            # **这里必须自己造 KV，不能指望 `kv` 变量。**
+            # 早先写的是 `kv if "kv" in locals() else None` —— 而
+            # `build_gateway_from_env` 里**从来没有 `kv` 这个局部变量**
+            # （它只活在 `_dep_specs()` 和 `main()` 里），于是判断恒为假，
+            # `AGENT_RUNTIME_KV=redis` 配了也照样退回进程内黑板：
+            # 单进程内 CAS 正常、HTTP 面正常、日志说 `blackboard.enabled`，
+            # 只有跨副本才发现"两个副本各写各的"。
+            _kv_kind = str(e.get("AGENT_RUNTIME_KV") or "memory").strip().lower()
+            _kv = _make_kv(e) if _kv_kind not in ("", "memory") else None
+            if _kv is not None and isinstance(_kv, _Unavailable):
+                # 显式点名了外部 KV 却连不上 → 报错。静默退回进程内会让
+                # 「多副本 CAS」变成「各写各的」，而那正是黑板存在的理由。
+                raise RuntimeError(f"AGENT_RUNTIME_KV={_kv_kind} 不可用：{_kv.reason}")
+            if _kv is not None:
+                # 连不上就别装 distributed：`DistributedBlackboard` 的构造不碰网络，
+                # 装上之后要等第一次 CAS 才报错 —— 而那时人已经在看业务问题了。
+                _ping = getattr(_kv, "ping", None)
+                if callable(_ping) and not _ping():
+                    raise RuntimeError(
+                        f"AGENT_RUNTIME_KV={_kv_kind} 不可达（{type(_kv).__name__} "
+                        f"ping=False）；要么把 KV 起来，要么改回 "
+                        f"AGENT_RUNTIME_KV=memory 并接受单进程黑板")
                 from plane.distributed import DistributedBlackboard
                 blackboard_rt = DistributedBlackboard(
                     _kv, prefix=str(e.get("AGENT_RUNTIME_BLACKBOARD_PREFIX")
