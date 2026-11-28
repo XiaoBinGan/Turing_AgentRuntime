@@ -75,6 +75,20 @@ else
   grep -E 'FAIL|不一致' /tmp/cfg-defaults.log | head -5 | sed 's/^/     /'
 fi
 
+# ③d 开放项时效（"测完了但文档还写着没做"是这类仓最容易漂的一种）
+#
+# 为什么单独一道：`check_readme_facts.py` 只校验数字，校验不了"这条还在不在
+# 待办里"。官网曾挂着「8 worker 曲线 · 需第二台机器」，而 64 核池上早已跑完；
+# `CAPACITY.md §9` 写「长稳只跑了 20 分钟」，同一份文件里就有 150 分钟的数据。
+# 这里强制每条开放项带 `<!-- checked: YYYY-MM-DD -->`，过期即红。
+printf '③d 开放项时效 ... '
+if "$PY" scripts/check_open_items.py >/tmp/open-items.log 2>&1; then
+  echo "OK"
+else
+  echo "FAIL"; FAIL=1
+  grep -E "缺少|过期|不存在|找不到" /tmp/open-items.log | head -5 | sed 's/^/     /'
+fi
+
 # ④ 端到端 demo
 if [ "$QUIET" != "-q" ]; then
   printf '④ 端到端场景 ... '

@@ -66,6 +66,21 @@ def _core_requirements_empty() -> bool:
     return all(not ln or ln.startswith("#") for ln in lines)
 
 
+_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _gate_claims(text: str) -> set:
+    """文档里声明的门禁道数（阿拉伯 + 中文两种写法）。
+
+    只认后面跟"道门禁 / gates"的，避免把"扩到十道"这类可选块的说法算进来。
+    """
+    claims = {int(n) for n in re.findall(r"(\d+)\s*(?:道门禁|gates)", text)}
+    claims |= {_CN_DIGITS[c]
+               for c in re.findall(r"([一二三四五六七八九十])\s*道门禁", text)}
+    return claims
+
+
 def main() -> int:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     mods = _count_modules()
@@ -112,16 +127,14 @@ def main() -> int:
                 txt = (ROOT / doc).read_text(encoding="utf-8")
             except FileNotFoundError:
                 continue
-            # 文档里既有阿拉伯数字也有中文数字，两种都要认
-            claim_7 = len(re.findall(r"(?:7 gates|7 道门禁|七道门禁)", txt))
-            claim_6 = len(re.findall(r"(?:6 gates|6 道门禁|六道门禁)", txt))
-            claimed = 6 if (claim_6 and not claim_7) else (7 if claim_7 else None)
-            if claimed is None:
-                continue
-            checks.append((f"门禁道数 {doc} 写 {claimed} == 实际 {actual_gates}",
-                           claimed == actual_gates,
-                           f"{doc} 写 {claimed} 道，verify.sh 实际 {actual_gates} 道"
-                           f"（编号 ①②③③b③c④⑤ 各算一道）"))
+            # 文档里既有阿拉伯数字也有中文数字，两种都要认。
+            # 早先写死 6/7 两个值：加了第 8 道（③d 开放项时效）之后，门禁真正的
+            # 数字变了，而这里认不出 8 → 静默跳过，检查退化成永远绿。
+            for claimed in _gate_claims(txt):
+                checks.append((f"门禁道数 {doc} 写 {claimed} == 实际 {actual_gates}",
+                               claimed == actual_gates,
+                               f"{doc} 写 {claimed} 道，verify.sh 实际 "
+                               f"{actual_gates} 道（编号 ①②③③b③c③d④⑤ 各算一道）"))
     except FileNotFoundError:
         pass
 

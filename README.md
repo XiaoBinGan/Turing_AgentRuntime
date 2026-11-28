@@ -27,7 +27,7 @@ memory, RAG, context management, sandboxing, multi-agent, evaluation,
 performance, enterprise architecture, system design, and runtime internals.
 
 Every chapter asks "how would you actually build this". This repository is the
-answer that survived contact with a test suite: **158 modules, 76k lines, 2329
+answer that survived contact with a test suite: **160 modules, 76k lines, 2336
 tests, 11 end-to-end scenarios**, all green and stable across repeated runs.
 
 The central design bet: **the runtime owns the shape, the application owns the
@@ -179,8 +179,8 @@ the MCP SDK).
 Run the full verification:
 
 ```bash
-./verify.sh                    # 7 gates: compile, tests, contracts, docs-facts, config-defaults, scenarios, HTTP
-VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 gates, needs live services
+./verify.sh                    # 8 gates: compile, tests, contracts, docs-facts, config-defaults, open-items, scenarios, HTTP
+VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 8 gates + 2 optional (cluster, langfuse), needs live services
 ```
 
 Start the HTTP service:
@@ -199,7 +199,7 @@ curl -X POST localhost:8000/v1/turns \
 
 Verified by the suite:
 
-- 2329 unit and integration tests, stable across repeated full runs
+- 2336 unit and integration tests, stable across repeated full runs
 - 11 end-to-end scenarios, 80 assertions
 - Concurrency: 100 threads against one gateway, 8 threads x 5 turns, 60 mixed
   workflow requests, zero exceptions
@@ -277,7 +277,7 @@ safe to adopt.
 多 Agent、评测、性能、企业级架构、系统设计、运行时源码。
 
 每一章都在问「这东西真建起来长什么样」。这个仓库就是那份答案，而且它经过了
-测试套件的检验：**158 个模块、7.6 万行、2329 个用例、11 个端到端场景**，
+测试套件的检验：**158 个模块、7.6 万行、2336 个用例、11 个端到端场景**，
 全绿，且重复跑稳定。
 
 核心设计赌注：**运行时拥有形状，应用拥有内容**。具体地：
@@ -366,13 +366,13 @@ jsonschema、redis、qdrant、pymilvus、OpenTelemetry、MCP SDK）。
 完整验收：
 
 ```bash
-./verify.sh                    # 7 道门禁：编译、测试、契约、文档事实、配置默认、场景、HTTP
+./verify.sh                    # 8 道门禁：编译、测试、契约、文档事实、配置默认、开放项时效、场景、HTTP
 VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 道，需要真服务
 ```
 
 ## 已验证与未验证
 
-**已验证**：2329 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
+**已验证**：2336 个用例重复跑稳定；11 个端到端场景 80 条断言；100 线程并发
 零异常；900 回合内存增长 3KB；并发下限流精确（40 并发 limit 10 恰好 10 通过）；
 真模型 4-6 步收敛；真 Milvus 集群、真 Langfuse 投递、真 OTLP；优雅关闭顺序、
 检查点崩溃恢复、workflow 持久化。
@@ -395,7 +395,7 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 道，需要真服务
 |---|---|---|
 | 长稳 **150 分钟** | 103.6 万请求、成功率 99.9998%、p99 101.8ms、线程恒定 10、句柄平坦、稳态内存 101→97MB（无泄漏）、峰值 268→487MB 是 GC 周期变长 | `scripts/soak_test.py` |
 | 真实 LLM 延迟 | 两组上游：deepseek-flash p50 2672ms；本地 Strata（2×T4）p50 4266ms。4-6 步回合端到端 11-26 秒。另跑了完整回合验证「文本渲染的工具描述能被模型正确转成 tool_calls」 | `scripts/real_llm_capacity.py` |
-| 多 worker | 本机 10 核：**4 worker 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%）；64 核池：**8 worker 9.0×，平台期 21,482 RPS（65.3× @ 56 worker）**。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
+| 多 worker | 本机 10 核：**4 worker 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%）；64 核池：**8 worker 9.0×，平台期 21,482 RPS（65.3× @ 56 worker）**；**p99 随 worker 数单调下降**（c=64：1w 504ms → 16w 42ms）。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
 | 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
 | sqlite 写入争用 | 多进程写同一文件 3.07×、零失败；选 Redis 的理由是故障域不是吞吐 | `scripts/bench_sqlite.py` |
 
@@ -405,12 +405,10 @@ CPU 仅 271% —— 请求在路上，不在处理。容量规划要先问"客�
 
 **仍然开放的**（都是"还没测到这里"，不是"测了不通过"）：
 
-- **多 worker 的 p99 曲线**：只测了吞吐（65.3×），没测 p99 随 worker 数的变化
-  —— 扩展比好看不等于尾延迟不退化。
-- **长稳 > 4 小时**：已跑满 150 分钟 / 103.6 万请求（无泄漏），小时级的缓慢漂移
-  仍未测。
-- **请求级 cache 字段**：三组上游的 `usage.prompt_tokens_details` 都是 null，
-  单请求能省多少只能估；累计值有 `/metrics` 兜底（省 87.7%）。
+- **长稳 > 12 小时**：已跑满 150 分钟 / 103.6 万请求（无泄漏），12 小时长稳正在
+  243 上跑；更久的缓慢漂移仍未测。 <!-- checked: 2026-11-28 -->
+- **请求级 cache 字段**：四组上游的 `usage.prompt_tokens_details` 都是 null，
+  单请求能省多少只能估；累计值有 `/metrics` 兜底（省 87.7%）。 <!-- checked: 2026-11-28 -->
 
 细节（含一个我不得不撤回的错误结论）见 `docs/design/CAPACITY.md`。
 

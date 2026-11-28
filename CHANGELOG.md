@@ -247,6 +247,53 @@ now, and the suite is green on a machine with the Docker CLI installed and no
 daemon running — the configuration that made the gate red.
 
 
+### p99 by worker count, and a gate for the open-items list
+
+Two of the three items the site listed as unverified are now measured.
+
+**p99 does not degrade as workers are added.** Same 64-core box, wrk 4.2.0, two
+rounds per tier, 20 s each, 5 s warmup, quotas off:
+
+| workers | c=64 p50 / p99 | c=256 p50 / p99 | throughput |
+|---|---|---|---|
+| 1 | 165.5 / **504.4** ms | 704.0 / **1,550** ms | 324-358 RPS |
+| 4 | 38.8 / **165.3** ms | 156.6 / **421.9** ms | 1,428-1,692 RPS |
+| 8 | 17.6 / **81.8** ms | 71.1 / **299.5** ms | 3,105-3,118 RPS |
+| 16 | 8.9 / **41.9** ms | 32.5 / **118.5** ms | 6,880-7,061 RPS |
+
+At a fixed concurrency, 1 → 16 workers cuts p99 by 12-13x. Two things worth
+keeping: at c=16 the 4-worker run already hits the global throughput peak
+(1,692 RPS), so adding workers beyond the offered concurrency only buys tail
+latency — and a fixed concurrency across worker counts would have produced
+"more workers do nothing". One worker also times out at c=256 (17-42 socket
+timeouts); 4 workers and up are clean.
+
+**Request-level cache fields: four upstreams, four nulls.** The 243 vLLM
+(`Qwen3-VL-Embedding-2B`) served three byte-identical 1,092-token prompts and
+returned `prompt_tokens_details: null` every time, with
+`prefix_cache_queries_total` flat at 0 — that deployment does not enable prefix
+caching, and the embedding endpoint never walks that path. So `Usage.billable()`
+still only discounts on the cloud gateway; the aggregate `/metrics` fallback
+(87.7% saved) is what remains usable.
+
+**The open-items list is now a gate.** "Measured, but the docs still say
+unverified" has now happened twice — the site carried "8 worker 曲线 · 需第二台
+机器" while the 64-core curve existed, and `CAPACITY.md §9` said "长稳只跑了 20
+分钟" two sections above 150 minutes of data. `scripts/check_open_items.py`
+requires every open item to carry `<!-- checked: YYYY-MM-DD -->`, fails when a
+marker is missing or older than 60 days, and fails when a backticked evidence
+path no longer exists. It runs as gate ③d. It deliberately does not judge
+whether an item still belongs on the list — that needs a person; it only
+guarantees someone looked recently and the evidence is still there.
+
+`check_readme_facts.py` had the same rot in its gate-count check: it hardcoded
+6 and 7, so the 8th gate (③d) was invisible and the check went quietly green.
+It now parses any digit or Chinese numeral followed by 道门禁/gates.
+
+Verification: 2,336 tests, 11/11 demo scenarios (80/80), 55 HTTP cases, 8 gates
+green on both machines. The 12-hour soak (`--minutes 720`, 8 concurrency) is
+running on 243; its result will replace the "长稳 > 12 小时" line when it lands.
+
 ### Four reported defects, four reproductions
 
 Four defects reported from downstream, all four reproduced before being

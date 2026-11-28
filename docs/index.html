@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Turing Agent Runtime — 生产形态的 LLM Agent 运行时</title>
-<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。158 模块 / 7.6 万行 / 2329 用例全绿。">
+<meta name="description" content="Turing Agent Runtime —— 一个生产形态的 LLM Agent 运行时：补丁协议上下文、有界控制循环、四资源面、两保障面。160 模块 / 7.6 万行 / 2336 用例全绿。">
 <meta property="og:title" content="Turing Agent Runtime">
 <meta property="og:description" content="生产形态的 LLM Agent 运行时。运行时拥有形状，应用拥有内容。">
 <meta property="og:type" content="website">
@@ -164,7 +164,7 @@ footer a{color:var(--fg2)}
     <div class="stats">
       <div class="stat"><div class="n">158</div><div class="l">模块</div></div>
       <div class="stat"><div class="n">76k</div><div class="l">行代码</div></div>
-      <div class="stat"><div class="n">2329</div><div class="l">测试用例</div></div>
+      <div class="stat"><div class="n">2336</div><div class="l">测试用例</div></div>
       <div class="stat"><div class="n">11</div><div class="l">端到端场景</div></div>
       <div class="stat"><div class="n">15</div><div class="l">冻结契约</div></div>
     </div>
@@ -291,14 +291,14 @@ footer a{color:var(--fg2)}
     </p>
     <figure style="margin-bottom:32px">
       <img src="assets/verification-gates.png" alt="门禁：编译、测试、契约、文档事实、场景、HTTP" loading="lazy">
-      <figcaption><code>./verify.sh</code> 的七道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到八道</figcaption>
+      <figcaption><code>./verify.sh</code> 的八道门禁；设 <code>VERIFY_CLUSTER=1 VERIFY_LANGEFUSE=1</code> 时扩到十道</figcaption>
     </figure>
     <div class="grid g2">
       <div class="card">
         <h3>已验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>单元 + 集成</td><td><span class="tag ok">2329 通过</span></td></tr>
+            <tr><td>单元 + 集成</td><td><span class="tag ok">2336 通过</span></td></tr>
             <tr><td>端到端场景</td><td><span class="tag ok">11 / 80 断言</span></td></tr>
             <tr><td>重复跑稳定性</td><td><span class="tag ok">连跑 5 次</span></td></tr>
             <tr><td>并发</td><td><span class="tag ok">100 线程零异常</span></td></tr>
@@ -321,6 +321,7 @@ footer a{color:var(--fg2)}
             <tr><td>真实 Embedding + Rerank</td><td><span class="tag ok">2B vLLM，两步检索纠正排序</span></td></tr>
             <tr><td>会话跨副本</td><td><span class="tag ok">STORE=redis，turn_index 连续</span></td></tr>
             <tr><td>多 worker 扩展</td><td><span class="tag ok">64 核：8 worker 9.0×，平台期 21,482 RPS</span></td></tr>
+            <tr><td>多 worker 的 p99 曲线</td><td><span class="tag ok">c=64：1w 504ms → 16w 42ms（12×）</span></td></tr>
             <tr><td>sqlite 写入争用</td><td><span class="tag ok">多进程 3.07×，零失败</span></td></tr>
             <tr><td>跨机 RTT 封顶</td><td><span class="tag ok">28ms 链路 → 3,260 RPS（服务端 CPU 仅 271%）</span></td></tr>
             <tr><td>缓存计价（累计值）</td><td><span class="tag ok">vLLM /metrics 兜底，省 87.7%</span></td></tr>
@@ -331,14 +332,13 @@ footer a{color:var(--fg2)}
         <h3>未验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>多 worker 的 p99 曲线</td><td><span class="tag part">只测吞吐，未测 p99 随 worker 数变化</span></td></tr>
-            <tr><td>请求级 cache 字段</td><td><span class="tag part">三组上游 usage 都不报（累计值已兜底）</span></td></tr>
-            <tr><td>长稳 &gt; 4 小时</td><td><span class="tag part">已跑 150 分钟；更久的没跑</span></td></tr>
+            <tr><td>请求级 cache 字段</td><td><span class="tag part">四组上游 usage 都不报（累计值已兜底）</span></td></tr>
+            <tr><td>长稳 &gt; 12 小时</td><td><span class="tag part">12 小时在跑；更久的没跑</span></td></tr>
           </tbody>
         </table>
         <p style="margin-top:16px">
-          引擎与运维面都已建成。8 worker 曲线与 150 分钟长稳已在 64 核池上补齐；
-          剩下的三项是「还没测到这里」，不是「测了不通过」。
+          引擎与运维面都已建成。8 worker 曲线、p99 随 worker 数、150 分钟长稳
+          都已在 64 核池上补齐；剩下的两项是「还没测到这里」，不是「测了不通过」。
         </p>
       </div>
     </div>
@@ -391,7 +391,7 @@ python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements-core.txt
 <span class="c"># 审批流：T2 工具 → 挂起 → 三种结果</span>
 .venv/bin/python examples/quickstart/03_approval.py
 
-<span class="c"># 11 个端到端场景 + 七道门禁</span>
+<span class="c"># 11 个端到端场景 + 八道门禁</span>
 .venv/bin/python demo/run.py
 ./verify.sh</pre>
 
