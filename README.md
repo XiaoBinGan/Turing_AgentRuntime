@@ -395,16 +395,22 @@ VERIFY_CLUSTER=1 VERIFY_LANGFUSE=1 ./verify.sh    # 9 道，需要真服务
 |---|---|---|
 | 长稳 **150 分钟** | 103.6 万请求、成功率 99.9998%、p99 101.8ms、线程恒定 10、句柄平坦、稳态内存 101→97MB（无泄漏）、峰值 268→487MB 是 GC 周期变长 | `scripts/soak_test.py` |
 | 真实 LLM 延迟 | 两组上游：deepseek-flash p50 2672ms；本地 Strata（2×T4）p50 4266ms。4-6 步回合端到端 11-26 秒。另跑了完整回合验证「文本渲染的工具描述能被模型正确转成 tool_calls」 | `scripts/real_llm_capacity.py` |
-| 多 worker | **4 worker 提升 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%），8 worker 3.59×。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
+| 多 worker | 本机 10 核：**4 worker 2.97×**（2,247 → 6,681 RPS，CPU 109% → 407%）；64 核池：**8 worker 9.0×，平台期 21,482 RPS（65.3× @ 56 worker）**。早先"没有提升"的结论是旧压测客户端造成的（它自身只有 ~110 RPS 上限） | `scripts/bench_multiworker.sh` |
 | 会话跨副本 | 已支持：`AGENT_RUNTIME_STORE=redis` 下 `turn_index` 跨副本连续 | `_make_store()` |
 | sqlite 写入争用 | 多进程写同一文件 3.07×、零失败；选 Redis 的理由是故障域不是吞吐 | `scripts/bench_sqlite.py` |
 
-**仍然开放的**：
+**一条实测结论（不是待办）**：网络 RTT 会封顶吞吐。同机 8 worker 到
+6,911-8,068 RPS；换一台机器经 28ms 链路打过来，同样配置只有 3,260 RPS，且服务端
+CPU 仅 271% —— 请求在路上，不在处理。容量规划要先问"客户端在哪"。
 
-- **网络 RTT 会封顶吞吐，这一条已实测**：同机 8 worker 到 6,911-8,068 RPS；
-  换一台机器经 28ms 链路打过来，同样配置只有 3,260 RPS，且服务端 CPU 仅 271%
-  —— 请求在路上，不在处理。容量规划要先问"客户端在哪"。
-- **长稳跑到 2.5 小时**。真实流量下连续数天的行为仍未测。
+**仍然开放的**（都是"还没测到这里"，不是"测了不通过"）：
+
+- **多 worker 的 p99 曲线**：只测了吞吐（65.3×），没测 p99 随 worker 数的变化
+  —— 扩展比好看不等于尾延迟不退化。
+- **长稳 > 4 小时**：已跑满 150 分钟 / 103.6 万请求（无泄漏），小时级的缓慢漂移
+  仍未测。
+- **请求级 cache 字段**：三组上游的 `usage.prompt_tokens_details` 都是 null，
+  单请求能省多少只能估；累计值有 `/metrics` 兜底（省 87.7%）。
 
 细节（含一个我不得不撤回的错误结论）见 `docs/design/CAPACITY.md`。
 

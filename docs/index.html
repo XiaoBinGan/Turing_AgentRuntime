@@ -314,14 +314,16 @@ footer a{color:var(--fg2)}
             <tr><td>SLO / 告警</td><td><span class="tag ok">9 条规则 promtool 通过</span></td></tr>
             <tr><td>值班手册</td><td><span class="tag ok">9 类告警处置</span></td></tr>
             <tr><td>故障演练</td><td><span class="tag ok">6 项姿态验证</span></td></tr>
-            <tr><td>长稳压测</td><td><span class="tag ok">20min ×2 / 13.7 万请求 / p99 105ms</span></td></tr>
+            <tr><td>长稳压测</td><td><span class="tag ok">150min / 103.6 万请求 / p99 101.8ms</span></td></tr>
             <tr><td>真实 LLM 延迟</td><td><span class="tag ok">三组上游：云端 2.7s / T4 4.3s / 4090 27B 4.7s</span></td></tr>
             <tr><td>推理模型思维链</td><td><span class="tag ok">默认剥离，9 个用例覆盖</span></td></tr>
             <tr><td>工具调用兼容</td><td><span class="tag ok">qwen3_xml / hermes / OpenAI 三种缓存字段</span></td></tr>
             <tr><td>真实 Embedding + Rerank</td><td><span class="tag ok">2B vLLM，两步检索纠正排序</span></td></tr>
             <tr><td>会话跨副本</td><td><span class="tag ok">STORE=redis，turn_index 连续</span></td></tr>
-            <tr><td>多 worker 扩展</td><td><span class="tag ok">4 worker 2.97× / 8 worker 3.59×</span></td></tr>
+            <tr><td>多 worker 扩展</td><td><span class="tag ok">64 核：8 worker 9.0×，平台期 21,482 RPS</span></td></tr>
             <tr><td>sqlite 写入争用</td><td><span class="tag ok">多进程 3.07×，零失败</span></td></tr>
+            <tr><td>跨机 RTT 封顶</td><td><span class="tag ok">28ms 链路 → 3,260 RPS（服务端 CPU 仅 271%）</span></td></tr>
+            <tr><td>缓存计价（累计值）</td><td><span class="tag ok">vLLM /metrics 兜底，省 87.7%</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -329,13 +331,14 @@ footer a{color:var(--fg2)}
         <h3>未验证</h3>
         <table style="margin-top:12px">
           <tbody>
-            <tr><td>8 worker 曲线</td><td><span class="tag part">需第二台机器</span></td></tr>
-            <tr><td>缓存计价真实验证</td><td><span class="tag part">三组上游都不报 cache hit</span></td></tr>
-            <tr><td>长稳 &gt; 20 分钟</td><td><span class="tag part">数小时级未跑</span></td></tr>
+            <tr><td>多 worker 的 p99 曲线</td><td><span class="tag part">只测吞吐，未测 p99 随 worker 数变化</span></td></tr>
+            <tr><td>请求级 cache 字段</td><td><span class="tag part">三组上游 usage 都不报（累计值已兜底）</span></td></tr>
+            <tr><td>长稳 &gt; 4 小时</td><td><span class="tag part">已跑 150 分钟；更久的没跑</span></td></tr>
           </tbody>
         </table>
         <p style="margin-top:16px">
-          引擎与运维面都已建成。剩下的是测量工具不足（压测端太弱），不是缺功能。
+          引擎与运维面都已建成。8 worker 曲线与 150 分钟长稳已在 64 核池上补齐；
+          剩下的三项是「还没测到这里」，不是「测了不通过」。
         </p>
       </div>
     </div>
