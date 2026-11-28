@@ -169,6 +169,31 @@ class TestJsonLogger(unittest.TestCase):
         self.assertNotIn("sk-live", line)
         self.assertEqual(json.loads(line)["api_key"], REDACTED)
 
+    def test_03c_in_memory_records_are_bounded(self) -> None:
+        """内存副本必须有上界 —— 否则它是"回合数 × 每条记录"的线性泄漏。
+
+        12 小时长稳实测（243，491 万请求）：RSS 191MB → 2.48GB，约 0.5KB/回合，
+        无平台期。根因就是 `records()` 那份 list 每次 `log()` 都 append、永不淘汰。
+        日志本身一条不少（走 sink），被限的只是排障用的内存副本。
+        """
+        from core.observability import JsonLogger
+        lines: list[str] = []
+        log = JsonLogger(sink=lines.append, records_limit=16)
+        for i in range(200):
+            log.info("turn.completed", n=i)
+        self.assertEqual(len(log.records()), 16, "内存副本超过上界")
+        self.assertEqual(log.records()[-1]["n"], 199, "保留的应当是最新的")
+        self.assertEqual(len(lines), 200, "sink 里的日志不能被截断")
+
+    def test_03d_default_records_limit_is_sane(self) -> None:
+        """默认上界不能是"无界"也不能小到排障时啥都看不到。"""
+        from core.observability import JsonLogger
+        log = JsonLogger(sink=lambda _l: None)
+        for i in range(3000):
+            log.info("noise")
+        self.assertLessEqual(len(log.records()), 2000)
+        self.assertGreaterEqual(len(log.records()), 100)
+
     def test_04b_redacts_oauth_and_key_material(self) -> None:
         """OAuth / PKCS8 的五种常见字段名必须脱敏。
 

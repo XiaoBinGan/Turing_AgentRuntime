@@ -187,6 +187,7 @@ class JsonLogger:
         service: str = "agent-runtime",
         clock: Callable[[], float] | None = None,
         redact_keys: Sequence[str] = ("api_key", "authorization", "password"),
+        records_limit: int = 1000,
     ) -> None:
         self._sink = sink if sink is not None else _stderr_sink
         if not callable(self._sink):
@@ -198,7 +199,12 @@ class JsonLogger:
         self._level = _level_name(level)
         # 归一后的脱敏键集合：调用方的 ∪ 强制底线（底线不可关闭）
         self._redact: frozenset[str] = self._build_redact(redact_keys)
-        self._records: list[dict] = []
+        # **必须有上界。** 这份内存副本是给排障用的（`records()`），每次 `log()`
+        # 都会 append 一条；不封顶的话它等于"回合数 × 每条记录"。12 小时长稳实测：
+        # 491 万请求 → RSS 191MB 涨到 2.48GB（≈0.5KB/回合），线性无平台期 ——
+        # 也就是一个"跑得越久越吃内存、但每个请求看起来都正常"的泄漏。
+        # 保留最近 `records_limit` 条足够定位问题；真正的长留证据在 sink（日志文件）。
+        self._records: deque[dict] = deque(maxlen=int(records_limit))
         self._lock = threading.RLock()
 
     # ── 配置 ────────────────────────────────────────────────

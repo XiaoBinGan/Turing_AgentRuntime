@@ -247,6 +247,36 @@ now, and the suite is green on a machine with the Docker CLI installed and no
 daemon running — the configuration that made the gate red.
 
 
+### The 12-hour soak found a linear leak
+
+The 150-minute run was flat, so the 12-hour run was expected to be the same
+measurement, longer. It was not:
+
+| t | RSS | requests | p99 |
+|---|---|---|---|
+| 1 min | 191 MB | 19k | 48.5 ms |
+| 33 min | 499 MB | 674k | 46.0 ms |
+| 242 min | **2,485 MB** | 4.91M | 56.7 ms |
+| 258 min | **2,635 MB** | 5.23M | 62.3 ms |
+
+9.5 MB/min ≈ **0.5 KB per turn**, linear, no plateau — while p99 stayed inside
+40-62 ms and the thread count held at 77. Every symptom a short run can see was
+healthy.
+
+`core/observability.py` kept `JsonLogger._records` as an unbounded
+`list[dict]`: one append per `log()` call, serving the `records()` in-memory
+copy used for debugging. Every turn logs `turn.completed`, so "recent records"
+grew with the total number of turns. Reproduced on the MacBook as well
+(3.35 MB/min at 6.7k req/min ≈ the same 0.5 KB/turn).
+
+Now a `deque(maxlen=records_limit)`, default 1000 (~0.5 MB). The sink keeps
+every line — only the in-memory copy is bounded. Same machine, same load, fixed
+build: RSS 183.3 MB at 40k requests and still 183.3 MB at 80k, where the old
+build had already gained 10 MB. A fresh 12-hour run with the fix is in progress;
+its result replaces the "长稳 > 12 小时" line.
+
+Negative control: reverting the bound turns `test_03c` and `test_03d` red.
+
 ### p99 by worker count, and a gate for the open-items list
 
 Two of the three items the site listed as unverified are now measured.
